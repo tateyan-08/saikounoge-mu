@@ -1,0 +1,6 @@
+{
+  "name": "Adventurer Journey RPG",
+  "description": "3x3画面のエリア全5エリアを冒険し、装備をアップグレードしながらボスを倒していく2DアクションRPGゲーム。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
