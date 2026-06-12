@@ -32,6 +32,7 @@ export interface Player {
   level: number;
   exp: number;
   kills: number;
+  frozenTimer?: number; // 2秒間の氷結 (動けなくなる)
 }
 
 export type EnemyType = 'mob1' | 'mob2' | 'boss' | 'key_carrier';
@@ -59,8 +60,11 @@ export interface Enemy {
   stiffenTimer?: number; // 硬直タイマー (フレーム数)
   stiffenDuration?: number; // 硬直時間最大
   isAttackingChain?: boolean; // 溜めから硬直終了までを走らせるかのフラグ
-  lockedAngle?: number; // 溜め開始時にロックオンしたプレイヤーの角度
+  lockedAngle?: number; // 溜め開始時にロックオンしたプレイヤー of 角度
   isKeyCarrier?: boolean; // 輝く鍵守フラグ
+  bossAttackCycle?: number;  // ボスの攻撃サイクル管理
+  breathWarningTimer?: number; // 氷のブレス予兆カウント
+  breathAngle?: number;       // 氷のブレス発角
 }
 
 export interface Projectile {
@@ -78,6 +82,11 @@ export interface Projectile {
   isPoison?: boolean; // 針コパスコーピオンの毒
   isBurn?: boolean; // マグマバット・獄炎トカゲの燃焼
   isFreeze?: boolean; // フリーズスプライトの氷結弾
+  isLizardKingFire?: boolean; // 魔トカゲの王の炎弾
+  isChimeraFire?: boolean; // キマイラの獅子紅炎弾 (Area 2 Boss Lion Fire)
+  isChimeraCursedSand?: boolean; // キマイラの山羊呪詛砂弾 (Area 2 Boss Goat Sand)
+  isGlaciosIceCrystal?: boolean; // グラキオス：優麗なる氷晶弾
+  isGlaciosIceBreath?: boolean;  // グラキオス：極寒の氷のブレス
 }
 
 export interface DropItem {

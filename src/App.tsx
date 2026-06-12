@@ -22,7 +22,8 @@ import {
   Skull, 
   ChevronRight,
   Info,
-  Key
+  Key,
+  MessageSquare
 } from 'lucide-react';
 import { Player, Enemy, Projectile, DropItem, FloatingText, Particle, GameArea, Item, ItemType } from './types';
 import { gameAudio } from './utils/audio';
@@ -93,6 +94,18 @@ const AREAS: Record<number, GameArea> = {
     obstacleColor: '#3b0764',
     bossName: '終焉魔神龍ヘルアビス',
     bossColor: '#a855f7'
+  },
+  30: {
+    id: 30,
+    name: '魔トカゲの王都宮殿',
+    theme: 'volcano',
+    description: '火山洞窟の奥深くに隠された、魔トカゲの王が君臨する禍々しき宮殿。',
+    bgColor: '#1c0303',
+    accentColor: '#ef4444',
+    borderColor: '#7f1d1d',
+    obstacleColor: '#3b0707',
+    bossName: '魔トカゲの王',
+    bossColor: '#dc2626'
   }
 };
 
@@ -102,6 +115,17 @@ interface Obstacle {
   y: number;
   r: number; // circular obstacles are easier and feel smoother for collision
   type: string;
+}
+
+interface FrozenRock {
+  id: string;
+  screenX: number;
+  screenY: number;
+  x: number;
+  y: number;
+  r: number;
+  hasKey: boolean;
+  isDestroyed: boolean;
 }
 
 function getObstaclesForScreen(areaId: number, screenX: number, screenY: number, gateOpened: boolean = true): Obstacle[] {
@@ -176,6 +200,21 @@ function getObstaclesForScreen(areaId: number, screenX: number, screenY: number,
         type: isDoor ? 'gate_top' : 'gate_wall'
       });
     }
+  }
+
+  // エリア4特定画面(0, 1)では、確実に(350, 140)に小屋を配置してその前に村人を召喚する
+  if (areaId === 4 && screenX === 0 && screenY === 1) {
+    obstacles.push({
+      x: 350,
+      y: 140,
+      r: 32,
+      type: 'hut'
+    });
+    // 散らばる障害物を少しだけ配置
+    obstacles.push({ x: 120, y: 150, r: 18, type: 'tree' });
+    obstacles.push({ x: 580, y: 320, r: 20, type: 'rock' });
+    obstacles.push({ x: 200, y: 380, r: 18, type: 'tree' });
+    return obstacles;
   }
 
   // Normal screen obstacle generator count: 4 to 7 hurdles
@@ -255,6 +294,18 @@ export default function App() {
   const [isBagOpen, setIsBagOpen] = useState<boolean>(false);
   const [boostTimeLeft, setBoostTimeLeft] = useState<number>(0);
   const [isPlayerFrozen, setIsPlayerFrozen] = useState<boolean>(false);
+  
+  // Lizard King quest mechanics states
+  const [burningLizardKills, setBurningLizardKills] = useState<number>(0);
+  const [lizardKingDefeated, setLizardKingDefeated] = useState<boolean>(false);
+
+  // Area 4 Villager quest states
+  const [golemKills, setGolemKills] = useState<number>(0);
+  const [villagerQuestStarted, setVillagerQuestStarted] = useState<boolean>(false);
+  const [frozenRocks, setFrozenRocks] = useState<FrozenRock[]>([]);
+  const [villagerHintReceived, setVillagerHintReceived] = useState<boolean>(false);
+
+  const [activeDialogue, setActiveDialogue] = useState<{ speaker: string; text: string; options?: { text: string; action: () => void }[] } | null>(null);
 
   // Ref refs for core rendering loops without lag
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -272,6 +323,10 @@ export default function App() {
     areaKills: 0,
     isBagOpen: false,
     boostDuration: 0,
+    burningLizardKills: 0,
+    lizardKingDefeated: false,
+    golemKills: 0,
+    villagerQuestStarted: false,
     player: {
       x: 150,
       y: 240,
@@ -312,6 +367,8 @@ export default function App() {
     lastFrameTime: 0,
     respawnTimer: 0,
     bossSpawned: false,
+    frozenRocks: [] as FrozenRock[],
+    villagerHintReceived: false,
   });
 
   // Calculate current effective fighting stats
@@ -323,6 +380,22 @@ export default function App() {
       def: gameRef.current.player.baseDef + defenseBonus,
     };
   }, [equippedHat, equippedArmor, equippedPants, equippedSword, playerLevel, boostTimeLeft]);
+
+  // Synchronize dynamic quest variables to gameRef for performance and thread-safe key polling
+  if (gameRef.current) {
+    (gameRef.current as any).hasActiveDialogue = activeDialogue !== null;
+    (gameRef.current as any).closeActiveDialogue = () => {
+      if (activeDialogue && activeDialogue.options && activeDialogue.options.length > 0) return;
+      setActiveDialogue(null);
+      (gameRef.current as any).activeDialogue = null;
+    };
+    (gameRef.current as any).lizardKingDefeated = lizardKingDefeated;
+    (gameRef.current as any).burningLizardKills = burningLizardKills;
+    (gameRef.current as any).golemKills = golemKills;
+    (gameRef.current as any).villagerQuestStarted = villagerQuestStarted;
+    (gameRef.current as any).frozenRocks = frozenRocks;
+    (gameRef.current as any).villagerHintReceived = villagerHintReceived;
+  }
 
   // Audio switcher
   const handleSoundToggle = () => {
@@ -355,12 +428,65 @@ export default function App() {
     gameRef.current.keyCarrierDefeated = false;
     setCarrierDefeated(false);
 
-    if (areaId === 2) {
-      // エリア2のみ: 門を開けるのに鍵が必要。初期状態は未所持、未開。
+    if (areaId === 2 || areaId === 3 || areaId === 4) {
+      // エリア2, 3, 4: 門を開けるのに鍵が必要。初期状態は未所持、未開。
       setHasAreaKey(false);
       setGateOpened(false);
       gameRef.current.hasAreaKey = false;
       gameRef.current.gateOpened = false;
+
+      // エリア4固有のクエスト初期化
+      if (areaId === 4) {
+        setGolemKills(0);
+        setVillagerQuestStarted(false);
+        gameRef.current.golemKills = 0;
+        gameRef.current.villagerQuestStarted = false;
+
+        // エリア4固有の凍った岩をランダムに7個配置
+        const rocks: FrozenRock[] = [];
+        const possibleScreens = [
+          { x: 0, y: 0 }, { x: 0, y: 1 }, { x: 0, y: 2 },
+          { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 1, y: 2 },
+          { x: 2, y: 0 }, { x: 2, y: 1 }
+        ];
+        
+        for (let i = 0; i < 7; i++) {
+          const screen = possibleScreens[Math.floor(Math.random() * possibleScreens.length)];
+          let rx = 150 + Math.random() * 500;
+          let ry = 150 + Math.random() * 300;
+          
+          if (screen.x === 0 && screen.y === 1) {
+            // 小屋 (350, 140) から離す
+            while (Math.sqrt((rx - 350) ** 2 + (ry - 140) ** 2) < 120) {
+              rx = 150 + Math.random() * 500;
+              ry = 150 + Math.random() * 300;
+            }
+          }
+          
+          rocks.push({
+            id: `frozen-rock-${Math.random()}`,
+            screenX: screen.x,
+            screenY: screen.y,
+            x: rx,
+            y: ry,
+            r: 24 + Math.floor(Math.random() * 7),
+            hasKey: false,
+            isDestroyed: false,
+          });
+        }
+        // そのうちの1つに鍵を隠す
+        rocks[Math.floor(Math.random() * rocks.length)].hasKey = true;
+
+        (gameRef.current as any).frozenRocks = rocks;
+        (gameRef.current as any).villagerHintReceived = false;
+        setFrozenRocks(rocks);
+        setVillagerHintReceived(false);
+      } else {
+        (gameRef.current as any).frozenRocks = [];
+        (gameRef.current as any).villagerHintReceived = false;
+        setFrozenRocks([]);
+        setVillagerHintReceived(false);
+      }
     } else if (areaId === 1) {
       // エリア1: 10体撃破で自動で門が開く。鍵は不要。
       setHasAreaKey(false);
@@ -368,13 +494,249 @@ export default function App() {
       gameRef.current.hasAreaKey = false;
       gameRef.current.gateOpened = false;
     } else {
-      // エリア3, 4, 5: 鍵不要、最初から開門済み
+      // エリア5, 30: 鍵不要、最初から開門済み
       setHasAreaKey(true);
       setGateOpened(true);
       gameRef.current.hasAreaKey = true;
       gameRef.current.gateOpened = true;
     }
     gameRef.current.gateAlertTimer = 0;
+  };
+
+  // Lizard King conversation interaction handler
+  const handleTalkToLizardKing = () => {
+    // 開いているのがダイアログ中の場合は、ダイアログを進める or 閉じる
+    if (activeDialogue) {
+      if (activeDialogue.options && activeDialogue.options.length > 0) {
+        return;
+      }
+      setActiveDialogue(null);
+      (gameRef.current as any).activeDialogue = null;
+      return;
+    }
+
+    const currentAreaId = gameRef.current.area;
+    const player = gameRef.current.player;
+    const isDefeated = !!(gameRef.current as any).lizardKingDefeated;
+
+    if (currentAreaId !== 3 || player.screenX !== 1 || player.screenY !== 2 || isDefeated) {
+      return;
+    }
+
+    // Find the actual lizard king NPC object
+    const npc = gameRef.current.enemies.find(e => (e.type as any) === 'lizard_king_npc');
+    if (!npc) {
+      return;
+    }
+
+    const npcX = npc.x + npc.width / 2;
+    const npcY = npc.y + npc.height / 2;
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+
+    const dist = Math.sqrt((npcX - px) ** 2 + (npcY - py) ** 2);
+    if (dist <= 110) {
+      const kills = gameRef.current.burningLizardKills || 0;
+      if (kills < 10) {
+        setActiveDialogue({
+          speaker: '👑 魔トカゲの王',
+          text: '「クハハハ！ 俺に挑みたいだと？ 百年早いわ！ まずは俺の部下『獄炎トカゲ』どもを 10体 倒してから来い、未熟者が！」',
+        });
+        (gameRef.current as any).activeDialogue = true;
+        (gameRef.current as any).hasActiveDialogue = true;
+        gameAudio.playCollect();
+      } else {
+        setActiveDialogue({
+          speaker: '👑 魔トカゲの王',
+          text: '「よくぞ俺の部下どもを10体倒したな。よかろう、よく来たな！ お前がどれだけの器か、俺の真の力を見せてやろう！」',
+          options: [
+            {
+              text: '⚔️ 魔トカゲの宮殿へ進み、戦う！',
+              action: () => {
+                setActiveDialogue(null);
+                (gameRef.current as any).activeDialogue = null;
+                (gameRef.current as any).hasActiveDialogue = false;
+                
+                // 魔トカゲの宮殿(エリア30)へ飛ばす
+                gameRef.current.area = 30;
+                setCurrentArea(30);
+                
+                // エリア内のギミック（鍵やゲートの開閉状態）を初期化（エリア30は鍵不要で初期状態で開門状態にしておく）
+                initAreaGimmick(30);
+                
+                const player = gameRef.current.player;
+                player.screenX = 2; // (2,2)に固定
+                player.screenY = 2;
+                setScreenCoordinates({ x: 2, y: 2 });
+                player.x = 100;
+                player.y = 240;
+
+                // 回復
+                player.hp = player.maxHp;
+                setPlayerHP(player.hp);
+
+                spawnMobsForCurrentScreen(30, 2, 2);
+
+                addLog('🌋 魔トカゲの宮殿に転移！ 魔トカゲの王との戦闘が開始されました！');
+                gameAudio.playPortal();
+              }
+            },
+            {
+              text: '🏃 今はまだ引き返す',
+              action: () => {
+                setActiveDialogue(null);
+                (gameRef.current as any).activeDialogue = null;
+                (gameRef.current as any).hasActiveDialogue = false;
+                addLog('🏃 戦う準備が整うまで引き返しました。');
+                gameAudio.playCollect();
+              }
+            }
+          ]
+        });
+        (gameRef.current as any).activeDialogue = true;
+        (gameRef.current as any).hasActiveDialogue = true;
+        gameAudio.playCollect();
+      }
+    } else {
+      // Distance is too far, provide an intuitive gaming hint
+      addLog('💬 魔トカゲの王に話しかけるには、もっと彼に近づいてください！');
+      gameRef.current.floatingTexts.push({
+        id: `dialog-far-${Math.random()}`,
+        text: 'もっと近づこう！ 💬',
+        x: player.x,
+        y: player.y - 15,
+        color: '#f87171',
+        alpha: 1,
+        life: 75,
+      });
+      gameAudio.playCollect();
+    }
+  };
+
+  // エリア4凍える村人との会話ハンドラー
+  const handleTalkToVillager = () => {
+    // 開いているのがダイアログ中の場合は、ダイアログを進める or 閉じる
+    if (activeDialogue) {
+      if (activeDialogue.options && activeDialogue.options.length > 0) {
+        return;
+      }
+      setActiveDialogue(null);
+      (gameRef.current as any).activeDialogue = null;
+      return;
+    }
+
+    const currentAreaId = gameRef.current.area;
+    const player = gameRef.current.player;
+
+    if (currentAreaId !== 4 || player.screenX !== 0 || player.screenY !== 1) {
+      return;
+    }
+
+    // Find the villager NPC object
+    const npc = gameRef.current.enemies.find(e => (e.type as any) === 'villager_npc');
+    if (!npc) {
+      return;
+    }
+
+    const npcX = npc.x + npc.width / 2;
+    const npcY = npc.y + npc.height / 2;
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+
+    const dist = Math.sqrt((npcX - px) ** 2 + (npcY - py) ** 2);
+    if (dist <= 110) {
+      if (!villagerQuestStarted) {
+        setActiveDialogue({
+          speaker: '🏡 凍える村人',
+          text: '「この村を救ってくれ勇者様よ、ゴーレムを倒してくれもし、５体以上倒すことができたらまた来てくれ。」',
+          options: [
+            {
+              text: '⚔️ 任せておけ！ゴーレムを退治しよう！',
+              action: () => {
+                setActiveDialogue(null);
+                (gameRef.current as any).activeDialogue = null;
+                (gameRef.current as any).hasActiveDialogue = false;
+                setVillagerQuestStarted(true);
+                (gameRef.current as any).villagerQuestStarted = true;
+                addLog('❄ 【クエスト開始】 極光結晶ゴーレムを５体倒すミッションが課された！');
+                gameAudio.playCollect();
+              }
+            }
+          ]
+        });
+        (gameRef.current as any).activeDialogue = true;
+        (gameRef.current as any).hasActiveDialogue = true;
+        gameAudio.playCollect();
+      } else {
+        const kills = gameRef.current.golemKills || 0;
+        if (kills < 5) {
+          setActiveDialogue({
+            speaker: '🏡 凍える村人',
+            text: `「極光結晶ゴーレムを５体以上倒したらまた声をかけてくれ。今は ${kills} / 5 体倒しているようだね。どうか頼んだぞ！」`,
+          });
+          (gameRef.current as any).activeDialogue = true;
+          (gameRef.current as any).hasActiveDialogue = true;
+          gameAudio.playCollect();
+        } else if (!hasAreaKey) {
+          // ゴーレム5体撃破達成＆まだ鍵を貰っていない時
+          if (!villagerHintReceived) {
+            setActiveDialogue({
+              speaker: '🏡 凍える村人',
+              text: '「さすがです勇者様、勇者様には特別鍵のありかのヒントを教えいたします。この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。ご武運を。」',
+              options: [
+                {
+                  text: '🔥 話を心に留め、鍵を探しにいく！',
+                  action: () => {
+                    setActiveDialogue(null);
+                    (gameRef.current as any).activeDialogue = null;
+                    (gameRef.current as any).hasActiveDialogue = false;
+
+                    (gameRef.current as any).villagerHintReceived = true;
+                    setVillagerHintReceived(true);
+
+                    addLog('🏡 【ヒント獲得】 凍氷国の村人から鍵の隠し場所についてヒントを得た！');
+                    addLog('❄ 【凍結の掟】マップ上の「凍った岩」を、マグマポーションの効果を得た状態で攻撃して壊せ！');
+                    gameAudio.playPortal();
+                  }
+                }
+              ]
+            });
+            (gameRef.current as any).activeDialogue = true;
+            (gameRef.current as any).hasActiveDialogue = true;
+            gameAudio.playCollect();
+          } else {
+            setActiveDialogue({
+              speaker: '🏡 凍える村人',
+              text: '「この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。マグマポーション（攻撃ブースト状態）の効果を得た状態で攻撃して壊すのです。ご武運を。」',
+            });
+            (gameRef.current as any).activeDialogue = true;
+            (gameRef.current as any).hasActiveDialogue = true;
+            gameAudio.playCollect();
+          }
+        } else {
+          // すでに鍵を獲得している場合
+          setActiveDialogue({
+            speaker: '🏡 凍える村人',
+            text: '「おお！ついに凍った岩から『極氷の鍵』を見つけ出したのですね！奥のエリア(2,2)に眠る『氷牙蒼龍グラキオス』は本当に恐ろしい龍だ。十分に装備を整えて挑まれるがよい！」',
+          });
+          (gameRef.current as any).activeDialogue = true;
+          (gameRef.current as any).hasActiveDialogue = true;
+          gameAudio.playCollect();
+        }
+      }
+    } else {
+      addLog('💬 村人に話しかけるには、もっと近づいてください！');
+      gameRef.current.floatingTexts.push({
+        id: `dialog-far-${Math.random()}`,
+        text: 'もっと近づこう！ 💬',
+        x: player.x,
+        y: player.y - 15,
+        color: '#38bdf8',
+        alpha: 1,
+        life: 75,
+      });
+      gameAudio.playCollect();
+    }
   };
 
   // Inventory equipping handler
@@ -465,8 +827,32 @@ export default function App() {
     const enemiesList: Enemy[] = [];
     const area = AREAS[areaId];
     
-    // Boss room at screen (2, 2)
-    if (screenX === 2 && screenY === 2) {
+    // Boss room / Palace checking
+    if (areaId === 30) {
+      // Spawn Demon Lizard King Boss in his Palace!
+      enemiesList.push({
+        id: 'lizard-king-boss',
+        type: 'boss',
+        name: '👑【王都ボス】魔トカゲの王',
+        x: CANVAS_WIDTH / 2 - 30,
+        y: CANVAS_HEIGHT / 2 - 30,
+        width: 70,
+        height: 70,
+        hp: 600,
+        maxHp: 600,
+        atk: 32,
+        def: 9,
+        speed: 1.1,
+        color: '#dc2626',
+        isAggressive: true,
+        shootCooldown: 80,
+        behavior: 'charge',
+        screenX,
+        screenY,
+        shootTimer: 0,
+      });
+      gameRef.current.bossSpawned = true;
+    } else if (screenX === 2 && screenY === 2) {
       // Spawn Boss!
       if (!gameRef.current.portal.active) {
         enemiesList.push({
@@ -493,8 +879,59 @@ export default function App() {
         gameRef.current.bossSpawned = true;
       }
     } else {
+      // Spawn Lizard King NPC in front of Area 3 gate if not defeated yet
+      if (areaId === 3 && screenX === 1 && screenY === 2 && !gameRef.current.lizardKingDefeated) {
+        enemiesList.push({
+          id: 'lizard-king-npc',
+          type: 'lizard_king_npc' as any,
+          name: '👑 魔トカゲの王 【対話可能】',
+          x: CANVAS_WIDTH - 85,
+          y: 215,
+          width: 50,
+          height: 50,
+          hp: 9999,
+          maxHp: 9999,
+          atk: 0,
+          def: 999,
+          speed: 0,
+          color: '#ef4444',
+          isAggressive: false,
+          shootCooldown: 999999,
+          behavior: 'wander',
+          screenX,
+          screenY,
+          shootTimer: 0,
+        } as any);
+      }
+
+      // エリア４の特定画面 (0, 1) で凍える村人のNPCを召喚
+      if (areaId === 4 && screenX === 0 && screenY === 1) {
+        enemiesList.push({
+          id: 'villager-npc',
+          type: 'villager_npc' as any,
+          name: '🏡 凍える村人 【対話可能】',
+          x: 350,
+          y: 205,
+          width: 25,
+          height: 38,
+          hp: 9999,
+          maxHp: 9999,
+          atk: 0,
+          def: 999,
+          speed: 0,
+          color: '#38bdf8',
+          isAggressive: false,
+          shootCooldown: 999999,
+          behavior: 'wander',
+          screenX,
+          screenY,
+          shootTimer: 0,
+        } as any);
+      }
+
       // Normal map screens: Spawn 2 to 4 mobs depending on Area difficulty
-      const mobCount = 2 + (areaId > 2 ? 2 : 1);
+      // ※エリア４の村人画面(0,1)は安全な聖域とするためモンスターは湧かない
+      const mobCount = (areaId === 4 && screenX === 0 && screenY === 1) ? 0 : (2 + (areaId > 2 ? 2 : 1));
       
       const mobNames = {
         1: ['グリーンスライム', '草原の牙蜘蛛'],
@@ -629,7 +1066,23 @@ export default function App() {
     // Binds
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
+      const isEKey = key === 'e' || e.code === 'KeyE' || e.key === 'E' || key === 'ｅ';
+
+      // Dialogue active interruption
+      if ((gameRef.current as any).hasActiveDialogue) {
+        if (isEKey || e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          if ((gameRef.current as any).closeActiveDialogue) {
+            (gameRef.current as any).closeActiveDialogue();
+          }
+        }
+        return;
+      }
+
       gameRef.current.keys[key] = true;
+      if (isEKey) {
+        gameRef.current.keys['e'] = true;
+      }
       
       // Prevent scrolling
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
@@ -641,9 +1094,17 @@ export default function App() {
         triggerPlayerAttack();
       }
 
-      // Portal level entry with 'e' or Enter
-      if (key === 'e' || e.key === 'Enter') {
-        triggerPortalTransition();
+      // Portal level entry or Lizard King interaction with 'e' or Enter
+      if (isEKey || e.key === 'Enter') {
+        const p = gameRef.current.player;
+        const currentAreaId = gameRef.current.area;
+        if (currentAreaId === 3 && p.screenX === 1 && p.screenY === 2 && !gameRef.current.lizardKingDefeated) {
+          handleTalkToLizardKing();
+        } else if (currentAreaId === 4 && p.screenX === 0 && p.screenY === 1) {
+          handleTalkToVillager();
+        } else {
+          triggerPortalTransition();
+        }
       }
 
       // Stage jumping shortcut for test play mode (keys: 'h')
@@ -713,7 +1174,11 @@ export default function App() {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      gameRef.current.keys[e.key.toLowerCase()] = false;
+      const key = e.key.toLowerCase();
+      gameRef.current.keys[key] = false;
+      if (key === 'e' || e.code === 'KeyE' || e.key === 'E' || key === 'ｅ') {
+        gameRef.current.keys['e'] = false;
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -767,6 +1232,89 @@ export default function App() {
       });
     }
 
+    // 凍った岩への物理攻撃判定
+    const currentRocks = (gameRef.current as any).frozenRocks || [];
+    currentRocks.forEach((rock: any) => {
+      if (rock.isDestroyed || rock.screenX !== player.screenX || rock.screenY !== player.screenY) return;
+
+      const rx = rock.x;
+      const ry = rock.y;
+      const px = player.x + player.width / 2;
+      const py = player.y + player.height / 2;
+
+      const dist = Math.sqrt((rx - px) ** 2 + (ry - py) ** 2);
+      if (dist <= 72) {
+        let isClockwise = false;
+        
+        if (player.dir === 'right' && rx > px - 5) isClockwise = true;
+        else if (player.dir === 'left' && rx < px + 5) isClockwise = true;
+        else if (player.dir === 'down' && ry > py - 5) isClockwise = true;
+        else if (player.dir === 'up' && ry < py + 5) isClockwise = true;
+
+        if (isClockwise) {
+          const isHintReceived = !!(gameRef.current as any).villagerHintReceived;
+          const isBoosted = (gameRef.current as any).boostDuration > 0;
+          if (isHintReceived && isBoosted) {
+            rock.isDestroyed = true;
+            
+            // 壊れたエフェクト
+            for (let cp = 0; cp < 22; cp++) {
+              gameRef.current.particles.push({
+                id: `rock-break-${Math.random()}`,
+                x: rock.x,
+                y: rock.y,
+                dx: (Math.random() - 0.5) * 8,
+                dy: (Math.random() - 0.5) * 8,
+                color: '#bae6fd',
+                size: 3 + Math.random() * 5,
+                life: 30,
+                maxLife: 30,
+              });
+            }
+            if (gameAudio.playPortal) {
+              gameAudio.playPortal();
+            }
+            gameRef.current.screenShake = 12;
+            
+            if (rock.hasKey) {
+              gameRef.current.hasAreaKey = true;
+              setHasAreaKey(true);
+              gameRef.current.gateOpened = true;
+              setGateOpened(true);
+              addLog('🔑 【極氷の鍵を発見！】 凍った岩をマグマの力で打ち砕くと、中から眩しく輝く 【極氷の鍵】 が見つかった！');
+              addLog('🔑 これにより、ボスエリア(2,2)への厳重な大門が静かに開かれた！');
+              
+              for (let cp = 0; cp < 40; cp++) {
+                gameRef.current.particles.push({
+                  id: `key-found-${Math.random()}`,
+                  x: rock.x,
+                  y: rock.y,
+                  dx: (Math.random() - 0.5) * 11,
+                  dy: (Math.random() - 0.5) * 11,
+                  color: '#fbbf24',
+                  size: 4 + Math.random() * 6,
+                  life: 45,
+                  maxLife: 45,
+                });
+              }
+            } else {
+              addLog('❄ 凍った岩を打ち砕いたが、中には何も入っていなかった。別の岩を探そう！');
+            }
+            
+            setFrozenRocks([...currentRocks]);
+          } else if (!isHintReceived) {
+            if (Math.random() < 0.25) {
+              addLog('❄ この凍った岩は非常に硬い。今はまだ壊す手段や、何かを企てる手がかり（ヒント）が足りないようだ。');
+            }
+          } else {
+            if (Math.random() < 0.25) {
+              addLog('❄ マグマポーションの魔熱（攻撃力ブースト状態）を纏って攻撃しなければ、この万年氷岩はビクともしないようだ！');
+            }
+          }
+        }
+      }
+    });
+
     // Damage enemies calculation
     // Arc logic: Check enemies close enough and in facing direction
     const range = 72;
@@ -775,6 +1323,9 @@ export default function App() {
     const currentAtk = gameRef.current.testPlayMode ? 999999 : (player.baseAtk + equippedSword.statValue + (isBoosted ? 10 : 0));
 
     gameRef.current.enemies.forEach(enemy => {
+      // Ignore damage calculations for dialogue NPCs
+      if (enemy.type === 'lizard_king_npc') return;
+
       const ex = enemy.x + enemy.width / 2;
       const ey = enemy.y + enemy.height / 2;
       const px = player.x + player.width / 2;
@@ -923,6 +1474,96 @@ export default function App() {
   // Enemy Defeat Trigger
   const handleEnemyDefeat = (enemy: Enemy) => {
     const area = gameRef.current.area;
+
+    // 魔トカゲの王ボスが倒された場合
+    if (enemy.id === 'lizard-king-boss') {
+      gameRef.current.player.kills += 1;
+      setPlayerKills(gameRef.current.player.kills);
+
+      // 鍵の付与 & 門を開ける
+      gameRef.current.hasAreaKey = true;
+      setHasAreaKey(true);
+      gameRef.current.gateOpened = true; 
+      setGateOpened(true);
+      
+      // 討伐状態の更新
+      setLizardKingDefeated(true);
+      gameRef.current.lizardKingDefeated = true;
+
+      // 火山エリア（エリア3）の門の前画面 (1, 2) に戻し、プレイヤー座標をセット
+      gameRef.current.area = 3;
+      setCurrentArea(3);
+      
+      const player = gameRef.current.player;
+      player.screenX = 1;
+      player.screenY = 2;
+      setScreenCoordinates({ x: 1, y: 2 });
+      player.x = CANVAS_WIDTH - 150;
+      player.y = 240;
+
+      // 霊的な帰還効果
+      for (let s = 0; s < 40; s++) {
+        gameRef.current.particles.push({
+          id: `return-flare-${Math.random()}`,
+          x: player.x,
+          y: player.y,
+          dx: (Math.random() - 0.5) * 8,
+          dy: (Math.random() - 0.5) * 8,
+          color: '#f97316',
+          size: 3 + Math.random() * 5,
+          life: 45,
+          maxLife: 45,
+        });
+      }
+
+      spawnMobsForCurrentScreen(3, 1, 2);
+
+      setActiveDialogue({
+        speaker: '🎉 終戦・凱旋',
+        text: '「見事、魔トカゲの王を討伐した！ 王は消滅し、お前はエリア３の門を開く【灼熱の鍵】を手に入れた！」',
+      });
+      (gameRef.current as any).activeDialogue = true;
+
+      addLog(`👑 【魔トカゲの王 討伐完了】: 王を打ち倒し、エリア３の門を開く「灼熱の鍵」を入手した！ 門の前に帰還しました。`);
+      gameAudio.playPortal();
+      
+      // 本物ボスなので経験値は与える
+      const expGain = 300;
+      gameRef.current.player.exp += expGain;
+      // レベルアップ確認
+      const requiredExp = gameRef.current.player.level * 80 + 50;
+      if (gameRef.current.player.exp >= requiredExp) {
+        gameRef.current.player.exp -= requiredExp;
+        gameRef.current.player.level += 1;
+        gameRef.current.player.maxHp = 100 + (gameRef.current.player.level * 15);
+        gameRef.current.player.hp = gameRef.current.player.maxHp;
+        gameRef.current.player.baseAtk += 3;
+        gameRef.current.player.baseDef += 1;
+        setPlayerLevel(gameRef.current.player.level);
+        setPlayerMaxHP(gameRef.current.player.maxHp);
+        setPlayerHP(gameRef.current.player.hp);
+        addLog(`⭐ レベルアップ！ レベル ${gameRef.current.player.level} に到達しました！`);
+      }
+      setPlayerExp(gameRef.current.player.exp);
+      return;
+    }
+
+    // 獄炎トカゲを倒したカウントを記録
+    if (enemy.name.includes('獄炎トカゲ')) {
+      const nextKills = (gameRef.current.burningLizardKills || 0) + 1;
+      gameRef.current.burningLizardKills = nextKills;
+      setBurningLizardKills(nextKills);
+      addLog(`🔥 獄炎トカゲを討伐しました！ (${nextKills}/10)`);
+    }
+
+    // 極光結晶ゴーレムを倒したカウントを記録
+    if (enemy.name.includes('極光結晶ゴーレム') && (gameRef.current as any).villagerQuestStarted) {
+      const nextKills = (gameRef.current.golemKills || 0) + 1;
+      gameRef.current.golemKills = nextKills;
+      setGolemKills(nextKills);
+      addLog(`❄ 極光結晶ゴーレムを討伐しました！ (${nextKills}/5)`);
+    }
+
     gameRef.current.player.kills += 1;
     setPlayerKills(gameRef.current.player.kills);
 
@@ -1240,7 +1881,7 @@ export default function App() {
       const area = gameRef.current.area;
       const activeArea = AREAS[area];
 
-      if (isGameOver || hasWonFinal || isBagOpen || gameRef.current.isBagOpen) return;
+      if (isGameOver || hasWonFinal || isBagOpen || gameRef.current.isBagOpen || activeDialogue !== null || (gameRef.current as any).hasActiveDialogue) return;
 
       // 毒デバフ処理 (毎秒5ダメージ、5秒間継続=300フレーム)
       if ((player as any).poisonDuration === undefined) (player as any).poisonDuration = 0;
@@ -1385,6 +2026,62 @@ export default function App() {
 
       // Character Death conditions
       if (player.hp <= 0) {
+        if (gameRef.current.area === 30) {
+          // 魔トカゲの王に倒された場合
+          const defaultHat = getDefaultEquipment().hat;
+          const defaultArmor = getDefaultEquipment().armor;
+          const defaultPants = getDefaultEquipment().pants;
+          const defaultSword = getDefaultEquipment().sword;
+
+          // インベントリから現在装備中のアイテム（最強装備など）を剥奪
+          const equipIds = new Set([equippedHat.id, equippedArmor.id, equippedPants.id, equippedSword.id]);
+          const newInvList = inventory.filter(item => !equipIds.has(item.id));
+          
+          setEquippedHat(defaultHat);
+          setEquippedArmor(defaultArmor);
+          setEquippedPants(defaultPants);
+          setEquippedSword(defaultSword);
+
+          // 装備していた最強アイテム（奪われたもの）を完全喪失させ、初期装備に直す
+          // 初期装備をインベントリ内に戻す
+          const cleanInv = [defaultHat, defaultArmor, defaultPants, defaultSword, ...newInvList.filter(item => 
+            item.id !== defaultHat.id && 
+            item.id !== defaultArmor.id && 
+            item.id !== defaultPants.id && 
+            item.id !== defaultSword.id
+          )];
+          setInventory(cleanInv);
+          setSelectedItem(null);
+
+          // プレイヤーHPを全回復（門の前に戻すため）
+          player.hp = player.maxHp;
+          setPlayerHP(player.hp);
+
+          // 火山の門の前の座標(1, 2)に移動
+          gameRef.current.area = 3;
+          setCurrentArea(3);
+          player.screenX = 1;
+          player.screenY = 2;
+          setScreenCoordinates({ x: 1, y: 2 });
+          player.x = CANVAS_WIDTH - 150;
+          player.y = 240;
+
+          // 死亡ログと音
+          addLog(`💀 【魔トカゲの王に敗北！】 すべての装備を奪われ、エリア３の門の前に這い戻った...`);
+          gameAudio.playGameOver();
+
+          // 挑発ダイアログ
+          setActiveDialogue({
+            speaker: '👑 魔トカゲの王',
+            text: '「クハハハ！ 残念だったな半人前。お前が身に付けている装備は、すべてこの俺のコレクションにしておいてやろう！」',
+          });
+          (gameRef.current as any).activeDialogue = true;
+
+          // 火山のモブを再スポーン
+          spawnMobsForCurrentScreen(3, 1, 2);
+          return;
+        }
+
         setIsGameOver(true);
         gameAudio.playGameOver();
         addLog(`💀 冒険者は力尽きました... 装備は失われません。復活ボタンから草原より再挑戦できます。`);
@@ -1491,10 +2188,25 @@ export default function App() {
         }
       });
 
+      // 凍った岩との衝突判定を追加
+      const rocks = (gameRef.current as any).frozenRocks || [];
+      rocks.forEach((rock: any) => {
+        if (rock.isDestroyed || rock.screenX !== player.screenX || rock.screenY !== player.screenY) return;
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
+        const dist = Math.sqrt((px - rock.x) ** 2 + (py - rock.y) ** 2);
+        const minDist = rock.r + 14;
+        if (dist < minDist) {
+          const angle = Math.atan2(py - rock.y, px - rock.x);
+          player.x = rock.x + Math.cos(angle) * minDist - player.width / 2;
+          player.y = rock.y + Math.sin(angle) * minDist - player.height / 2;
+        }
+      });
+
       // Clamp limits + Transition Screens (3x3 grid coordinates)
       // Screen X coordinate shifts
       if (player.x < -10) {
-        if (player.screenX > 0) {
+        if (player.screenX > 0 && area !== 30) {
           player.screenX -= 1;
           player.x = CANVAS_WIDTH - player.width - 30;
           setScreenCoordinates({ x: player.screenX, y: player.screenY });
@@ -1508,7 +2220,7 @@ export default function App() {
           player.x = 0;
         }
       } else if (player.x + player.width > CANVAS_WIDTH + 10) {
-        if (player.screenX < 2) {
+        if (player.screenX < 2 && area !== 30) {
           // Gating check for Area Boss Screen (2, 2)
           if (player.screenX + 1 === 2 && player.screenY === 2 && !gameRef.current.hasAreaKey) {
             player.x = CANVAS_WIDTH - player.width - 25; // Block and push back
@@ -1531,7 +2243,7 @@ export default function App() {
 
       // Screen Y coordinate shifts
       if (player.y < -10) {
-        if (player.screenY > 0) {
+        if (player.screenY > 0 && area !== 30) {
           player.screenY -= 1;
           player.y = CANVAS_HEIGHT - player.height - 30;
           setScreenCoordinates({ x: player.screenX, y: player.screenY });
@@ -1545,7 +2257,7 @@ export default function App() {
           player.y = 0;
         }
       } else if (player.y + player.height > CANVAS_HEIGHT + 10) {
-        if (player.screenY < 2) {
+        if (player.screenY < 2 && area !== 30) {
           // Gating check for Area Boss Screen (2, 2)
           if (player.screenX === 2 && player.screenY + 1 === 2 && !gameRef.current.hasAreaKey) {
             player.y = CANVAS_HEIGHT - player.height - 25; // Block and push back
@@ -1614,12 +2326,90 @@ export default function App() {
 
       // Enemies Intelligence (AI pathfinding / Charge Attacks)
       gameRef.current.enemies.forEach(enemy => {
+        if ((enemy.type as any) === 'lizard_king_npc') {
+          return; // Talkable NPC stays completely still, does not attack or walk away
+        }
+
         const ex = enemy.x + enemy.width / 2;
         const ey = enemy.y + enemy.height / 2;
         const px = player.x + player.width / 2;
         const py = player.y + player.height / 2;
         
         const dist = Math.sqrt((px - ex) ** 2 + (py - ey) ** 2);
+
+        // エリア4ボスの氷結予兆ブレス処理
+        if (enemy.breathWarningTimer === undefined) enemy.breathWarningTimer = 0;
+        if (enemy.breathWarningTimer > 0) {
+          enemy.breathWarningTimer--;
+
+          // チャージ：ボスの周囲に氷結晶が吸い込まれるエフェクト
+          if (Math.random() < 0.3) {
+            const angle = Math.random() * Math.PI * 2;
+            const chargeDist = 35 + Math.random() * 45;
+            const cx = ex + Math.cos(angle) * chargeDist;
+            const cy = ey + Math.sin(angle) * chargeDist;
+            gameRef.current.particles.push({
+              id: `charge-ice-${Math.random()}`,
+              x: cx,
+              y: cy,
+              dx: -Math.cos(angle) * 1.8,
+              dy: -Math.sin(angle) * 1.8,
+              color: '#38bdf8',
+              size: 2 + Math.random() * 3,
+              life: 20,
+              maxLife: 20,
+            });
+          }
+
+          if (enemy.breathWarningTimer === 0) {
+            // ブレスの放出開始！
+            const targetAngle = enemy.breathAngle !== undefined ? enemy.breathAngle : Math.atan2(py - ey, px - ex);
+            
+            // 扇状に合計10つの連続ブレス氷弾を時間・速度・角度に揺らぎをもたせて放つ！
+            const breathCount = 10;
+            const breathSpread = 0.55; // 約30度
+            for (let i = 0; i < breathCount; i++) {
+              const angleOffset = (i / (breathCount - 1) - 0.5) * breathSpread;
+              const pAngle = targetAngle + angleOffset;
+              const bSpeed = 3.2 + Math.random() * 3.4; // 弾速をバラつかせて波を表現
+
+              gameRef.current.projectiles.push({
+                id: `p-breath-${Math.random()}`,
+                x: ex,
+                y: ey,
+                dx: Math.cos(pAngle) * bSpeed,
+                dy: Math.sin(pAngle) * bSpeed,
+                radius: 12, // 通常より大きい当たり判定
+                damage: 22, // 氷のブレスは高威力
+                color: '#818cf8',
+                screenX: player.screenX,
+                screenY: player.screenY,
+                isGlaciosIceBreath: true,
+              });
+            }
+
+            // ド迫力の氷爆発ノイズ
+            addLog(`❄ 【絶対零度】 氷牙蒼龍グラキオスは、吹雪吹き荒れる絶対零度のブレスを解き放った！`);
+            gameRef.current.screenShake = 16;
+            
+            // 攻撃後の大きな硬直（回復チャンス）を設定 (60フレーム＝1.0秒)
+            enemy.stiffenTimer = 65;
+            enemy.isAttackingChain = false;
+            enemy.shootTimer = 0;
+          }
+
+          // 警告予兆中は移動や他の攻撃行動をとらず、その場にじっと硬直する
+          obstacles.forEach(obs => {
+            const edist = Math.sqrt((enemy.x + enemy.width/2 - obs.x) ** 2 + (enemy.y + enemy.height/2 - obs.y) ** 2);
+            const minEDist = obs.r + enemy.width/2;
+            if (edist < minEDist) {
+              const eAngle = Math.atan2(enemy.y + enemy.height/2 - obs.y, enemy.x + enemy.width/2 - obs.x);
+              enemy.x = obs.x + Math.cos(eAngle) * minEDist - enemy.width / 2;
+              enemy.y = obs.y + Math.sin(eAngle) * minEDist - enemy.height / 2;
+            }
+          });
+          return; // 後続の更新ルーチンをスキップ
+        }
 
         // Ensure optional states are initialized
         if (enemy.stiffenTimer === undefined) enemy.stiffenTimer = 0;
@@ -1674,26 +2464,161 @@ export default function App() {
             let stiffenLen = 25; // Default stiffness: (approx 0.42 seconds)
 
             if (enemy.type === 'boss') {
-              // Boss shoots dynamic circle patterns!
-              const projectilesCount = 4 + area * 2;
-              const baseAngle = Math.random() * Math.PI;
+              if (area === 30) {
+                // 魔トカゲの王独自の発射パターン（弾速低下・弾数削減で避けやすく！）
+                const patternType = Math.random() < 0.5 ? 'fan' : 'spiral';
+                const playerAngle = Math.atan2(py - ey, px - ex);
+                
+                if (patternType === 'fan') {
+                  // プレイヤーの方向を中心とした扇状5連射（隙間から避けられる！）
+                  const fanCount = 5;
+                  const spread = 0.6; // 拡散角度
+                  for (let i = 0; i < fanCount; i++) {
+                    const offset = fanCount > 1 ? (i / (fanCount - 1) - 0.5) * spread : 0;
+                    const pAngle = playerAngle + offset;
+                    gameRef.current.projectiles.push({
+                      id: `p-${Math.random()}`,
+                      x: ex,
+                      y: ey,
+                      dx: Math.cos(pAngle) * 4.2, // 弾速を11.2からおよそ4.2に落とす
+                      dy: Math.sin(pAngle) * 4.2,
+                      radius: 12, // マイルドなサイズ
+                      damage: 18, // 攻撃力をマイルドに調整
+                      color: '#f97316',
+                      screenX: player.screenX,
+                      screenY: player.screenY,
+                      isLizardKingFire: true,
+                    });
+                  }
+                } else {
+                  // 周囲にゆっくり広がる螺旋状の8連波（全方位だが隙間だらけ＆遅い！）
+                  const projCount = 8;
+                  const baseAngle = Math.random() * Math.PI;
+                  for (let i = 0; i < projCount; i++) {
+                    const pAngle = baseAngle + (Math.PI * 2 / projCount) * i;
+                    gameRef.current.projectiles.push({
+                      id: `p-${Math.random()}`,
+                      x: ex,
+                      y: ey,
+                      dx: Math.cos(pAngle) * 3.2,
+                      dy: Math.sin(pAngle) * 3.2,
+                      radius: 12,
+                      damage: 16,
+                      color: '#f97316',
+                      screenX: player.screenX,
+                      screenY: player.screenY,
+                      isLizardKingFire: true,
+                    });
+                  }
+                }
+                stiffenLen = 50; // 硬直時間を長くして攻撃チャンスを増やす
+              } else if (area === 2) {
+                // === エリア2ボス：双頭魔獣キマイラ独自のご馳走弾幕パターン！ ===
+                // 獅子頭の紅炎扇（プレイヤー狙い・隙間があって避けやすい） or 山羊頭の呪詛砂晶（花びら螺旋全方位）
+                const patternType = Math.random() < 0.5 ? 'lion_fire' : 'goat_sand';
+                const playerAngle = Math.atan2(py - ey, px - ex);
 
-              for (let bl = 0; bl < projectilesCount; bl++) {
-                const pAngle = baseAngle + (Math.PI * 2 / projectilesCount) * bl;
-                gameRef.current.projectiles.push({
-                  id: `p-${Math.random()}`,
-                  x: ex,
-                  y: ey,
-                  dx: Math.cos(pAngle) * (2.2 + area * 0.3),
-                  dy: Math.sin(pAngle) * (2.2 + area * 0.3),
-                  radius: 7 + area,
-                  damage: area * 6 + 6,
-                  color: activeArea.accentColor,
-                  screenX: player.screenX,
-                  screenY: player.screenY,
-                });
+                if (patternType === 'lion_fire') {
+                  // パターン1: 獅子頭の紅炎扇 (5本立て)
+                  const fanCount = 5;
+                  const spread = 0.55; // 拡散範囲
+                  for (let i = 0; i < fanCount; i++) {
+                    const offset = fanCount > 1 ? (i / (fanCount - 1) - 0.5) * spread : 0;
+                    const pAngle = playerAngle + offset;
+                    gameRef.current.projectiles.push({
+                      id: `p-${Math.random()}`,
+                      x: ex,
+                      y: ey,
+                      dx: Math.cos(pAngle) * 3.6, // 避けやすい速度
+                      dy: Math.sin(pAngle) * 3.6,
+                      radius: 9,
+                      damage: 14,
+                      color: '#ef4444', // 紅蓮の真赤
+                      screenX: player.screenX,
+                      screenY: player.screenY,
+                      isChimeraFire: true,
+                    });
+                  }
+                } else {
+                  // パターン2: 山羊頭の呪詛魔晶 (螺旋全方位 / 速度を交互に変えることで非常に美しい波状かつ安全な弾幕に！)
+                  const projCount = 8;
+                  const baseAngle = Math.random() * Math.PI;
+                  for (let i = 0; i < projCount; i++) {
+                    const pAngle = baseAngle + (Math.PI * 2 / projCount) * i;
+                    const speed = (i % 2 === 0) ? 2.5 : 3.8;
+                    gameRef.current.projectiles.push({
+                      id: `p-${Math.random()}`,
+                      x: ex,
+                      y: ey,
+                      dx: Math.cos(pAngle) * speed,
+                      dy: Math.sin(pAngle) * speed,
+                      radius: 8,
+                      damage: 12,
+                      color: '#eab308', // 黄金色の呪霊砂晶
+                      screenX: player.screenX,
+                      screenY: player.screenY,
+                      isChimeraCursedSand: true,
+                    });
+                  }
+                }
+                stiffenLen = 42; // 硬直時間を長くし、反撃と回避のメリハリをつけやすく調整
+              } else if (area === 4) {
+                // === エリア4ボス：氷牙蒼龍グラキオス独自攻撃パターン！ ===
+                if (enemy.bossAttackCycle === undefined) {
+                  enemy.bossAttackCycle = 0;
+                }
+                enemy.bossAttackCycle++;
+
+                if (enemy.bossAttackCycle % 3 === 0) {
+                  // 3回に一度：氷の予兆ブレスを溜め始める (予兆時間 60フレーム = 1.0秒)
+                  enemy.breathWarningTimer = 60;
+                  enemy.breathAngle = Math.atan2(py - ey, px - ex);
+                  stiffenLen = 0; // 予兆カウント自体が動作硬直となる
+                  addLog(`⚠️ 【予兆：氷牙蒼龍】グラキオスが首を回し、冷気のブレスを吐くチャージを開始した！`);
+                } else {
+                  // 通常攻撃の氷晶弾（ダイヤモンド状の8方向美弾幕）
+                  const projCount = 8;
+                  const baseAngle = Math.random() * Math.PI;
+                  for (let i = 0; i < projCount; i++) {
+                    const pAngle = baseAngle + (Math.PI * 2 / projCount) * i;
+                    gameRef.current.projectiles.push({
+                      id: `p-${Math.random()}`,
+                      x: ex,
+                      y: ey,
+                      dx: Math.cos(pAngle) * 3.4,
+                      dy: Math.sin(pAngle) * 3.4,
+                      radius: 8,
+                      damage: 16,
+                      color: '#38bdf8',
+                      screenX: player.screenX,
+                      screenY: player.screenY,
+                      isGlaciosIceCrystal: true,
+                    });
+                  }
+                  stiffenLen = 40; // 攻撃の後に反撃できるスキを作る
+                }
+              } else {
+                // 通常ボスの全方位弾
+                const projectilesCount = 4 + area * 2;
+                const baseAngle = Math.random() * Math.PI;
+
+                for (let bl = 0; bl < projectilesCount; bl++) {
+                  const pAngle = baseAngle + (Math.PI * 2 / projectilesCount) * bl;
+                  gameRef.current.projectiles.push({
+                    id: `p-${Math.random()}`,
+                    x: ex,
+                    y: ey,
+                    dx: Math.cos(pAngle) * (2.2 + area * 0.3),
+                    dy: Math.sin(pAngle) * (2.2 + area * 0.3),
+                    radius: 7 + area,
+                    damage: area * 6 + 6,
+                    color: activeArea.accentColor,
+                    screenX: player.screenX,
+                    screenY: player.screenY,
+                  });
+                }
+                stiffenLen = 38; // Boss recovery: 38 frames (approx 0.63 seconds)
               }
-              stiffenLen = 38; // Boss recovery: 38 frames (approx 0.63 seconds)
             } else if (area >= 2) {
               // Normal ranged monster shoots targeted orb
               const isScorpion = area === 2 && enemy.type === 'mob1'; // 針コパスコーピオン
@@ -1914,8 +2839,34 @@ export default function App() {
             player.hp -= finalDmg;
             setPlayerHP(player.hp);
 
-            // Special ice speed reduction on Area 4
-            if (area === 4) {
+            // Special ice speed reduction/freeze on Area 4
+            if (p.isGlaciosIceBreath) {
+              (player as any).freezeDuration = 120; // 2秒間 (120フレーム) 完全氷結
+              addLog(`❄ 【凍結！】 氷牙蒼龍グラキオスの絶対零度ブレスを被弾！ 全身が完全に凍りつき、攻撃・移動が２秒間不可能！`);
+              
+              // 凍結被弾時：プレイヤーの周りに激しい氷塵が散らばるエフェクト
+              for (let f = 0; f < 18; f++) {
+                const fAngle = Math.random() * Math.PI * 2;
+                const fSpd = 1.0 + Math.random() * 3.5;
+                gameRef.current.particles.push({
+                  id: `freeze-hit-${Math.random()}`,
+                  x: player.x + player.width / 2,
+                  y: player.y + player.height / 2,
+                  dx: Math.cos(fAngle) * fSpd,
+                  dy: Math.sin(fAngle) * fSpd,
+                  color: '#e0f2fe',
+                  size: 2.2 + Math.random() * 2.8,
+                  life: 25,
+                  maxLife: 25,
+                });
+              }
+            } else if (p.isGlaciosIceCrystal) {
+              player.speed = 2; // slow down player
+              setTimeout(() => {
+                gameRef.current.player.speed = 4;
+              }, 1200);
+              addLog(`❄ グラキオスの美しい氷晶に貫かれ、足にかじかむ冷気を受けた！ 移動速度低下！`);
+            } else if (area === 4) {
               player.speed = 2; // slow down player
               setTimeout(() => {
                 gameRef.current.player.speed = 4;
@@ -2275,7 +3226,7 @@ export default function App() {
 
       // Draw Top Wall
       ctx.fillStyle = wallFill;
-      if (player.screenY === 0) {
+      if (player.screenY === 0 || area === 30) {
         // Solid wall
         ctx.fillRect(0, 0, CANVAS_WIDTH, wallThickness);
         // Draw top edge shadow highlight
@@ -2300,7 +3251,7 @@ export default function App() {
 
       // Draw Bottom Wall
       ctx.fillStyle = wallFill;
-      if (player.screenY === 2) {
+      if (player.screenY === 2 || area === 30) {
         ctx.fillRect(0, CANVAS_HEIGHT - wallThickness, CANVAS_WIDTH, wallThickness);
         ctx.fillStyle = wallTop;
         ctx.fillRect(0, CANVAS_HEIGHT - wallThickness, CANVAS_WIDTH, 4);
@@ -2321,7 +3272,7 @@ export default function App() {
 
       // Draw Left Wall
       ctx.fillStyle = wallFill;
-      if (player.screenX === 0) {
+      if (player.screenX === 0 || area === 30) {
         ctx.fillRect(0, 0, wallThickness, CANVAS_HEIGHT);
         ctx.fillStyle = wallTop;
         ctx.fillRect(0, 0, 4, CANVAS_HEIGHT);
@@ -2342,7 +3293,7 @@ export default function App() {
 
       // Draw Right Wall
       ctx.fillStyle = wallFill;
-      if (player.screenX === 2) {
+      if (player.screenX === 2 || area === 30) {
         ctx.fillRect(CANVAS_WIDTH - wallThickness, 0, wallThickness, CANVAS_HEIGHT);
         ctx.fillStyle = wallTop;
         ctx.fillRect(CANVAS_WIDTH - wallThickness, 0, 4, CANVAS_HEIGHT);
@@ -2861,6 +3812,71 @@ export default function App() {
         ctx.restore();
       });
 
+      // 凍った岩の描画
+      const currentRocks = (gameRef.current as any).frozenRocks || [];
+      currentRocks.forEach((rock: any) => {
+        if (rock.isDestroyed || rock.screenX !== player.screenX || rock.screenY !== player.screenY) return;
+
+        ctx.save();
+
+        // 1. 底面の柔らかい丸影
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.ellipse(rock.x, rock.y + rock.r * 0.4, rock.r * 1.0, rock.r * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 2. 凍った結晶岩の本体 (シアン〜サファイアブルーのグラデーション)
+        const gradient = ctx.createRadialGradient(rock.x, rock.y, 2, rock.x, rock.y, rock.r);
+        gradient.addColorStop(0, '#e0f2fe'); // 中央は白く輝く氷
+        gradient.addColorStop(0.5, '#38bdf8'); // 中間は鮮やかなシアン
+        gradient.addColorStop(1, '#0284c7'); // 外側は凛とした氷青
+
+        ctx.fillStyle = gradient;
+        
+        // 氷の結晶面(綺麗な多角形)のパスを形成して塗りつぶし
+        ctx.beginPath();
+        const sides = 6;
+        for (let i = 0; i < sides; i++) {
+          const angle = (i * 2 * Math.PI) / sides;
+          const radiusOffset = (i % 2 === 0) ? rock.r : rock.r * 0.82;
+          const rx = rock.x + Math.cos(angle) * radiusOffset;
+          const ry = rock.y + Math.sin(angle) * radiusOffset;
+          if (i === 0) {
+            ctx.moveTo(rx, ry);
+          } else {
+            ctx.lineTo(rx, ry);
+          }
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // 外側のハイライト線(氷のきらめき)
+        ctx.strokeStyle = '#bae6fd';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        // 内部に輝くファセット光を描写
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.moveTo(rock.x, rock.y - rock.r * 0.45);
+        ctx.lineTo(rock.x + rock.r * 0.25, rock.y);
+        ctx.lineTo(rock.x, rock.y + rock.r * 0.45);
+        ctx.lineTo(rock.x - rock.r * 0.25, rock.y);
+        ctx.closePath();
+        ctx.globalAlpha = 0.5;
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+
+        // 小さな雪の結晶マーク ❄
+        ctx.fillStyle = '#f0f9ff';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('❄', rock.x, rock.y);
+
+        ctx.restore();
+      });
+
       // Render Level Portal gateway if spawned here
       const portal = gameRef.current.portal;
       if (portal.active && portal.screenX === player.screenX && portal.screenY === player.screenY) {
@@ -3041,6 +4057,320 @@ export default function App() {
           ctx.fill();
 
           ctx.restore();
+        } else if (p.isChimeraFire) {
+          // --- キマイラ獅子頭の「砂漠の猛炎爪弾」 ---
+          ctx.save();
+          ctx.shadowColor = '#ef4444';
+          ctx.shadowBlur = 12;
+
+          const time = Date.now() / 40;
+          const rad = p.radius;
+          const travelAngle = Math.atan2(p.dy, p.dx);
+          const oppAngle = travelAngle + Math.PI;
+
+          // 1. 後ろになびく3つの烈炎の尾と煙(Smoke and Tail)
+          ctx.fillStyle = '#f97316';
+          for (let i = 0; i < 3; i++) {
+            const wiggle = Math.sin(time * 1.5 + i) * 0.22;
+            const currentAngle = oppAngle + wiggle;
+            const offsetDist = rad * (1.0 + i * 0.4);
+            const tx = p.x + Math.cos(currentAngle) * offsetDist;
+            const ty = p.y + Math.sin(currentAngle) * offsetDist;
+            
+            ctx.beginPath();
+            ctx.arc(tx, ty, rad * (0.8 - i * 0.2) * (0.9 + Math.sin(time + i) * 0.1), 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // 2. メインの炎外殻 (紅蓮)
+          ctx.fillStyle = '#dc2626';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * (1.1 + Math.sin(time * 2) * 0.1), 0, Math.PI * 2);
+          ctx.fill();
+
+          // 3. インナーコア：眩い黄色の炎
+          ctx.fillStyle = '#facc15';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.65, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 4. 超高熱の白色芯
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.3, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 5. 弾の進行方向に爪状のフレアを出す (炎の牙)
+          ctx.strokeStyle = '#f97316';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 1.25, travelAngle - 0.4, travelAngle + 0.4);
+          ctx.stroke();
+
+          ctx.restore();
+        } else if (p.isChimeraCursedSand) {
+          // --- キマイラ山羊頭の「太古の呪詛結晶砂塊」 ---
+          ctx.save();
+          ctx.shadowColor = '#d97706';
+          ctx.shadowBlur = 14;
+
+          const time = Date.now() / 60;
+          const rad = p.radius;
+          const travelAngle = Math.atan2(p.dy, p.dx);
+          const oppAngle = travelAngle + Math.PI;
+
+          // 1. 魔法砂の粒子がたなびく黄金の塵(Dust of Ancient Sand)
+          ctx.fillStyle = 'rgba(245, 158, 11, 0.45)';
+          for (let i = 0; i < 4; i++) {
+            const angleOffset = oppAngle + (Math.sin(time * 2 + i) * 0.35);
+            const trailDist = rad * (1.2 + i * 0.6);
+            const sx = p.x + Math.cos(angleOffset) * trailDist;
+            const sy = p.y + Math.sin(angleOffset) * trailDist;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 2.5 + Math.sin(time + i) * 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // 2. 外側の魔導光輪(Rotating magic ring around crystal)
+          ctx.strokeStyle = '#eab308';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 1.4, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // 光輪の回転する輝きドット(Moving dots along the ring)
+          ctx.fillStyle = '#fef08a';
+          for (let i = 0; i < 3; i++) {
+            const dotAngle = time * 0.8 + (Math.PI * 2 / 3) * i;
+            const dx = p.x + Math.cos(dotAngle) * rad * 1.4;
+            const dy = p.y + Math.sin(dotAngle) * rad * 1.4;
+            ctx.beginPath();
+            ctx.arc(dx, dy, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // 3. メインの古代魔晶体 (美しい八面体・菱形描画)
+          ctx.fillStyle = '#78350f'; // 深く渋い砂岩の茶
+          ctx.strokeStyle = '#854d0e';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y - rad * 1.3);
+          ctx.lineTo(p.x + rad * 1.0, p.y);
+          ctx.lineTo(p.x, p.y + rad * 1.3);
+          ctx.lineTo(p.x - rad * 1.0, p.y);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // 4. 山羊の呪詛の輝くコア (ダイヤモンドインナーシェイプ)
+          ctx.fillStyle = '#eab308'; // 黄金
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y - rad * 0.7);
+          ctx.lineTo(p.x + rad * 0.55, p.y);
+          ctx.lineTo(p.x, p.y + rad * 0.7);
+          ctx.lineTo(p.x - rad * 0.55, p.y);
+          ctx.closePath();
+          ctx.fill();
+
+          // 5. さらなる高輝度インナー
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.22, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        } else if (p.isGlaciosIceCrystal) {
+          // --- 氷牙蒼龍グラキオス：美しき「蒼極ダイヤモンド氷晶弾」 ---
+          ctx.save();
+          ctx.shadowColor = '#0ea5e9';
+          ctx.shadowBlur = 12;
+
+          const rad = p.radius;
+          const time = Date.now() / 90;
+
+          // 1. レイヤー1：氷晶の外光輪
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+          ctx.lineWidth = 1.0;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 1.35, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // 2. レイヤー2：ダイヤモンドのメイン氷結晶（四、六角ポリゴン）
+          ctx.fillStyle = '#1e3a8a';   // 深いコバルトブルー
+          ctx.strokeStyle = '#38bdf8'; // スカイブルー輪郭
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          for (let i = 0; i < 4; i++) {
+            const rotAngle = (Math.PI / 2) * i + time; // 回転
+            const kx = p.x + Math.cos(rotAngle) * (rad * 1.1);
+            const ky = p.y + Math.sin(rotAngle) * (rad * 1.1);
+            if (i === 0) ctx.moveTo(kx, ky);
+            else ctx.lineTo(kx, ky);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // 3. インナーコア (高光シアン結晶)
+          ctx.fillStyle = '#bae6fd'; // 淡いホワイトシアン
+          ctx.beginPath();
+          for (let i = 0; i < 4; i++) {
+            const rotAngle = (Math.PI / 2) * i - time * 1.5; // 逆回転
+            const kx = p.x + Math.cos(rotAngle) * (rad * 0.6);
+            const ky = p.y + Math.sin(rotAngle) * (rad * 0.6);
+            if (i === 0) ctx.moveTo(kx, ky);
+            else ctx.lineTo(kx, ky);
+          }
+          ctx.closePath();
+          ctx.fill();
+
+          // 4. ホワイト中心点
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.28, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 移動方向の逆側に少し氷の粒子をまく
+          ctx.fillStyle = '#e0f2fe';
+          const travelAngle = Math.atan2(p.dy, p.dx);
+          const oppAngle = travelAngle + Math.PI;
+          for (let j = 0; j < 2; j++) {
+            const angle = oppAngle + (Math.random() - 0.5) * 0.8;
+            const dist = rad * (1.2 + Math.random() * 0.8);
+            const sx = p.x + Math.cos(angle) * dist;
+            const sy = p.y + Math.sin(angle) * dist;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 1.2 + Math.random() * 1.8, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.restore();
+        } else if (p.isGlaciosIceBreath) {
+          // --- 氷牙蒼龍グラキオス：絶対零度「蒼氷・絶対零度ウインドブレス」 ---
+          ctx.save();
+          ctx.shadowColor = '#06b6d4';
+          ctx.shadowBlur = 15;
+
+          const rad = p.radius;
+          const time = Date.now() / 40;
+          const travelAngle = Math.atan2(p.dy, p.dx);
+          const oppAngle = travelAngle + Math.PI;
+
+          // 1. たなびくコバルト冷気塊 (進行方向と逆に伸びる波状吹雪。徐々に小さくなる)
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.4)';
+          for (let i = 0; i < 4; i++) {
+            const waveAngle = oppAngle + Math.sin(time * 1.6 + i) * 0.25;
+            const waveDist = rad * (1.0 + i * 0.5);
+            const wx = p.x + Math.cos(waveAngle) * waveDist;
+            const wy = p.y + Math.sin(waveAngle) * waveDist;
+            const bubbleSize = rad * (0.9 - i * 0.18) * (0.9 + Math.sin(time * 1.1 + i) * 0.1);
+            if (bubbleSize > 1) {
+              ctx.beginPath();
+              ctx.arc(wx, wy, bubbleSize, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+
+          // 2. メインブレス核（美しいたなびく氷結晶）
+          ctx.fillStyle = '#0284c7';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * (1.1 + Math.sin(time * 1.5) * 0.08), 0, Math.PI * 2);
+          ctx.fill();
+
+          // 3. インナー高輝度スカイ
+          ctx.fillStyle = '#bae6fd';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.72, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 4. ホワイト輝石
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.35, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 5. さながら氷点下の吹雪が巻き起こるようなスノースパーク粒子を多量放出
+          ctx.fillStyle = '#e0f2fe';
+          ctx.shadowBlur = 0;
+          for (let j = 0; j < 3; j++) {
+            const angle = oppAngle + (Math.random() - 0.5) * 1.2;
+            const dist = rad * (1.5 + Math.random() * 1.5);
+            const sx = p.x + Math.cos(angle) * dist;
+            const sy = p.y + Math.sin(angle) * dist;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 1.5 + Math.random() * 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.restore();
+        } else if (p.isLizardKingFire) {
+          // 魔トカゲの王の「烈火王都弾」：超美麗、かっこいいたなびく紅蓮の炎エフェクト
+          ctx.save();
+          ctx.shadowColor = '#dc2626';
+          ctx.shadowBlur = 18;
+
+          const time = Date.now() / 50;
+          const rad = p.radius;
+          
+          // 1. レイヤー1: 外殻炎（紅蓮）
+          ctx.fillStyle = '#dc2626';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * (1.2 + Math.sin(time * 1.2) * 0.15), 0, Math.PI * 2);
+          ctx.fill();
+
+          // 2. レイヤー2: 進行方向の逆向きへダイナミックにたなびく３つの炎の尾(Tail)
+          const travelAngle = Math.atan2(p.dy, p.dx);
+          const oppAngle = travelAngle + Math.PI;
+
+          ctx.fillStyle = '#f97316'; // 鮮やかなオレンジ
+          for (let i = 0; i < 4; i++) {
+            const wiggle = Math.sin(time * 1.8 + i) * 0.25;
+            const currentAngle = oppAngle + wiggle;
+            const waveDist = rad * (1.1 + i * 0.45);
+            const ox = p.x + Math.cos(currentAngle) * waveDist;
+            const oy = p.y + Math.sin(currentAngle) * waveDist;
+            
+            ctx.beginPath();
+            const tailSize = rad * (0.85 - i * 0.18) * (0.95 + Math.sin(time + i) * 0.1);
+            if (tailSize > 1) {
+              ctx.arc(ox, oy, tailSize, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+
+          // 3. レイヤー3: コアに近い高熱部
+          ctx.fillStyle = '#ea580c';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.85, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 4. レイヤー4: 黄金のインナースパークコア
+          ctx.fillStyle = '#facc15';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.55, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 5. レイヤー5: 完全高熱の白色中心点
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, rad * 0.28, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 6. 燃え盛る弾丸から飛び散る微細な火の粉(Sparks)
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#facc15';
+          for (let j = 0; j < 3; j++) {
+            // 進行方向の逆側に少し散らす
+            const sparkAngle = oppAngle + (Math.random() - 0.5) * 1.4;
+            const sparkDist = rad * (1.8 + Math.random() * 1.3);
+            const sx = p.x + Math.cos(sparkAngle) * sparkDist;
+            const sy = p.y + Math.sin(sparkAngle) * sparkDist;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 1.8 + Math.random() * 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.restore();
         } else {
           // Glowing outer arc
           ctx.shadowColor = p.color;
@@ -3060,9 +4390,44 @@ export default function App() {
         }
       });
 
-      // Render Enemies & Bosses
+       // Render Enemies & Bosses
       gameRef.current.enemies.forEach(enemy => {
         if (enemy.screenX !== player.screenX || enemy.screenY !== player.screenY) return;
+
+        // エリア4ボスの氷結予兆ブレスインジケーター（真っ赤な扇型警告範囲）
+        if (enemy.breathWarningTimer && enemy.breathWarningTimer > 0 && enemy.breathAngle !== undefined) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.22)';
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.58)';
+          ctx.lineWidth = 2.5;
+
+          const ex = enemy.x + enemy.width / 2;
+          const ey = enemy.y + enemy.height / 2;
+          const startAngle = enemy.breathAngle - 0.285; // 扇幅 (約30度)
+          const endAngle = enemy.breathAngle + 0.285;
+          const range = 280;
+
+          // アニメーション（徐々にチャージが高まるように明滅）
+          const pulseIntensity = 0.5 + Math.sin(Date.now() / 80) * 0.25;
+          ctx.fillStyle = `rgba(239, 68, 68, ${0.15 + pulseIntensity * 0.15})`;
+
+          ctx.beginPath();
+          ctx.moveTo(ex, ey);
+          ctx.arc(ex, ey, range, startAngle, endAngle);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // 進行度の円弧ゲージを重ねて収縮描画
+          const progress = (60 - enemy.breathWarningTimer) / 60;
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(ex, ey, range * progress, startAngle, endAngle);
+          ctx.stroke();
+
+          ctx.restore();
+        }
 
         const pulse = 1 + (Math.sin(Date.now() / 120) * 0.05);
         const isBoss = enemy.type === 'boss';
@@ -3181,8 +4546,110 @@ export default function App() {
         ctx.fillStyle = enemy.color;
         const areaNum = gameRef.current.area;
         
-        if (isBoss) {
-          if (areaNum === 1) {
+        if (enemy.type === 'villager_npc') {
+          // === 凍える村人 ===
+          // あったかそうな北皮ケープ＆フードを着た姿
+          // フード（水色/シアン）
+          ctx.fillStyle = '#0284c7'; // コバルトブルー
+          ctx.beginPath();
+          ctx.arc(0, -5, enemy.height * 0.45, 0, Math.PI * 2);
+          ctx.fill();
+
+          // ファーフチ（ふかふかの真っ白なコートの縁）
+          ctx.fillStyle = '#f1f5f9';
+          ctx.beginPath();
+          ctx.arc(0, -6, enemy.height * 0.45, Math.PI * 0.2, Math.PI * 0.8, false);
+          ctx.ellipse(0, 5, enemy.width * 0.5, 4, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 人間の顔 (薄いオレンジ/肌色)
+          ctx.fillStyle = '#ffedd5';
+          ctx.beginPath();
+          ctx.arc(0, -4, enemy.width * 0.24, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 凍えて震えるチーク (水色/青)
+          ctx.fillStyle = '#bae6fd';
+          ctx.beginPath();
+          ctx.arc(-4, -2, 2.2, 0, Math.PI * 2);
+          ctx.arc(4, -2, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 閉じた目（寒そうに震えている）
+          ctx.strokeStyle = '#0284c7';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          // 左目
+          ctx.moveTo(-6, -6);
+          ctx.lineTo(-2, -4);
+          // 右目
+          ctx.moveTo(6, -6);
+          ctx.lineTo(2, -4);
+          ctx.stroke();
+
+          // 極上のあったかマフラー (赤色)
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.roundRect(-enemy.width * 0.4, 4, enemy.width * 0.8, 6, 2);
+          ctx.fill();
+          
+          // マフラーのタレ
+          ctx.fillRect(4, 8, 4, 12);
+        } else if (isBoss || enemy.type === 'lizard_king_npc') {
+          if (enemy.type === 'lizard_king_npc' || areaNum === 30) {
+            // === 魔トカゲの王 (NPC / ボス) ===
+            // 深紅の身体、炎をまとう王トカゲ。王冠をいただく
+            ctx.fillStyle = '#b91c1c'; // クリムゾンレッド
+            ctx.beginPath();
+            ctx.moveTo(-enemy.width / 2, enemy.height / 2);
+            ctx.lineTo(-enemy.width / 3, -enemy.height / 5);
+            ctx.lineTo(0, -enemy.height / 2); // 尖ったトカゲ鱗頭蓋
+            ctx.lineTo(enemy.width / 3, -enemy.height / 5);
+            ctx.lineTo(enemy.width / 2, enemy.height / 2);
+            ctx.closePath();
+            ctx.fill();
+
+            // お腹の金色の燃える鱗模様
+            ctx.fillStyle = '#f59e0b';
+            ctx.beginPath();
+            ctx.ellipse(0, 8, enemy.width / 4, enemy.height / 3.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 金色の王冠(Crown)
+            ctx.fillStyle = '#fbbf24';
+            ctx.strokeStyle = '#78350f';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-16, -enemy.height / 2 - 2);
+            ctx.lineTo(-11, -enemy.height / 2 - 14);
+            ctx.lineTo(-4, -enemy.height / 2 - 7);
+            ctx.lineTo(0, -enemy.height / 2 - 19);
+            ctx.lineTo(4, -enemy.height / 2 - 7);
+            ctx.lineTo(11, -enemy.height / 2 - 14);
+            ctx.lineTo(16, -enemy.height / 2 - 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // 鋭い赤い獣眼と、縦に裂けたトカゲ瞳
+            ctx.fillStyle = '#f87171'; // 琥珀/炎色
+            ctx.beginPath();
+            ctx.arc(-10, -10, 3.5, 0, Math.PI * 2);
+            ctx.arc(10, -10, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#1e1b4b'; // 黒縦線スラッシュ
+            ctx.fillRect(-11, -12, 1.8, 4.5);
+            ctx.fillRect(9, -12, 1.8, 4.5);
+
+            // 宮廷の大鎌・武器槍
+            ctx.strokeStyle = '#b91c1c';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(enemy.width / 2 - 4, enemy.height / 2 - 5);
+            ctx.lineTo(enemy.width / 2 + 12, -enemy.height / 5);
+            ctx.stroke();
+          } else if (areaNum === 1) {
             // === エリア1: マザー・スライム ===
             // ぷにぷにスライム（ドーム状）
             ctx.beginPath();
@@ -4080,6 +5547,94 @@ export default function App() {
         ctx.fillStyle = isBoss ? activeArea.accentColor : '#ffffff';
         ctx.font = 'bold 10px monospace';
         ctx.fillText(enemy.name, bx, by - 6);
+
+        // Draw interactive overhead pop dialogue balloon when close to Lizard King NPC
+        if (enemy.type === 'lizard_king_npc') {
+          const px = player.x + player.width / 2;
+          const py = player.y + player.height / 2;
+          const ex = enemy.x + enemy.width / 2;
+          const ey = enemy.y + enemy.height / 2;
+          const dist = Math.sqrt((ex - px) ** 2 + (ey - py) ** 2);
+          if (dist <= 110) {
+            ctx.save();
+            ctx.fillStyle = '#b91c1c'; // Crimson background matching boss style
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            
+            const promptW = 104;
+            const promptH = 22;
+            const pxStart = enemy.x + (enemy.width - promptW) / 2;
+            const pyStart = enemy.y - 48;
+            
+            // Draw rounded bubble rect
+            ctx.beginPath();
+            ctx.roundRect(pxStart, pyStart, promptW, promptH, 4);
+            ctx.fill();
+            ctx.stroke();
+
+            // Arrow shape
+            ctx.fillStyle = '#b91c1c';
+            ctx.beginPath();
+            ctx.moveTo(enemy.x + enemy.width / 2 - 5, pyStart + promptH);
+            ctx.lineTo(enemy.x + enemy.width / 2 + 5, pyStart + promptH);
+            ctx.lineTo(enemy.x + enemy.width / 2, pyStart + promptH + 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Bubble text label
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('💬 [E] 話しかける', enemy.x + enemy.width / 2, pyStart + promptH / 2);
+            ctx.restore();
+          }
+        }
+
+        // Draw interactive overhead pop dialogue balloon when close to Villager NPC
+        if ((enemy.type as any) === 'villager_npc') {
+          const px = player.x + player.width / 2;
+          const py = player.y + player.height / 2;
+          const ex = enemy.x + enemy.width / 2;
+          const ey = enemy.y + enemy.height / 2;
+          const dist = Math.sqrt((ex - px) ** 2 + (ey - py) ** 2);
+          if (dist <= 110) {
+            ctx.save();
+            ctx.fillStyle = '#0284c7'; // Ice themed cool sky blue
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            
+            const promptW = 104;
+            const promptH = 22;
+            const pxStart = enemy.x + (enemy.width - promptW) / 2;
+            const pyStart = enemy.y - 48;
+            
+            // Draw rounded bubble rect
+            ctx.beginPath();
+            ctx.roundRect(pxStart, pyStart, promptW, promptH, 4);
+            ctx.fill();
+            ctx.stroke();
+
+            // Arrow shape
+            ctx.fillStyle = '#0284c7';
+            ctx.beginPath();
+            ctx.moveTo(enemy.x + enemy.width / 2 - 5, pyStart + promptH);
+            ctx.lineTo(enemy.x + enemy.width / 2 + 5, pyStart + promptH);
+            ctx.lineTo(enemy.x + enemy.width / 2, pyStart + promptH + 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Bubble text label
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('💬 [E] 話しかける', enemy.x + enemy.width / 2, pyStart + promptH / 2);
+            ctx.restore();
+          }
+        }
       });
 
       // Render Player Character (Adventurer)
@@ -4193,6 +5748,49 @@ export default function App() {
           ctx.arc(0, 0, 48, Math.PI * 0.2, Math.PI * 0.8);
         }
         ctx.stroke();
+        ctx.restore();
+      }
+
+      // 氷牙蒼龍グラキオスの「氷結」デバフによる物理凍結オーバーレイ表示
+      if ((player as any).freezeDuration > 0) {
+        ctx.save();
+        ctx.shadowColor = '#06b6d4';
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = 'rgba(165, 243, 252, 0.65)'; // コバルトブルー半透明氷
+        ctx.strokeStyle = '#e0f2fe';
+        ctx.lineWidth = 2.2;
+
+        const r = player.width * 0.95;
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const angle = (Math.PI / 3) * i + (Date.now() / 1200); // 緩やかに回転して躍動感をプラス
+          const ix = Math.cos(angle) * r;
+          const iy = Math.sin(angle) * r;
+          if (i === 0) ctx.moveTo(ix, iy);
+          else ctx.lineTo(ix, iy);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // 氷のクラック（ヒビ割れ線。より結晶らしくみせるため）
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.lineWidth = 1.2;
+        ctx.moveTo(-r * 0.4, -r * 0.3);
+        ctx.lineTo(0, 0);
+        ctx.lineTo(r * 0.4, -r * 0.4);
+        ctx.moveTo(-r * 0.2, r * 0.4);
+        ctx.lineTo(0, 0);
+        ctx.lineTo(r * 0.3, r * 0.3);
+        ctx.stroke();
+
+        // 氷華（きらめく六角形の粒子を頭上に）
+        ctx.fillStyle = '#bae6fd';
+        ctx.font = 'bold 11px font-mono, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('❄ FROZEN ❄', 0, -player.height - 3);
+
         ctx.restore();
       }
 
@@ -4518,6 +6116,11 @@ export default function App() {
     setScreenCoordinates({ x: 0, y: 0 });
     setIsGameOver(false);
     setHasWonFinal(false);
+    
+    // Reset Quest states
+    setBurningLizardKills(0);
+    setLizardKingDefeated(false);
+    setActiveDialogue(null);
 
     // Ref state resets
     gameRef.current.area = 1;
@@ -4534,6 +6137,11 @@ export default function App() {
     gameRef.current.player.x = 150;
     gameRef.current.player.y = 240;
     gameRef.current.player.speed = 3;
+    
+    gameRef.current.burningLizardKills = 0;
+    gameRef.current.lizardKingDefeated = false;
+    (gameRef.current as any).hasActiveDialogue = false;
+
     (gameRef.current.player as any).poisonDuration = 0;
     (gameRef.current.player as any).poisonTick = 0;
     (gameRef.current.player as any).burnDuration = 0;
@@ -4636,8 +6244,10 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <Flame className="w-5 h-5 text-red-500 animate-pulse" />
                 <div>
-                  <span className="text-gray-400 text-[10px] block font-mono">CURRENT AREA INDEX {currentArea}/5</span>
-                  <span className="text-white font-bold text-sm tracking-wide">{AREAS[currentArea].name}</span>
+                  <span className="text-gray-400 text-[10px] block font-mono">
+                    {currentArea === 30 ? 'PALACE OF LIZARD KING' : `CURRENT AREA INDEX ${currentArea}/5`}
+                  </span>
+                  <span className="text-white font-bold text-sm tracking-wide">{AREAS[currentArea]?.name || '未知のエリア'}</span>
                 </div>
               </div>
               <div className="flex items-center gap-2.5">
@@ -4661,7 +6271,46 @@ export default function App() {
                     <span>{hasAreaKey ? 'ボス門 of 鍵 所持' : '輝きし鍵 捜索中'}</span>
                   </div>
                 )}
-                {currentArea !== 2 && (
+                {currentArea === 4 && (
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded border transition-all ${
+                    hasAreaKey 
+                      ? 'bg-yellow-500/15 border-yellow-500/40 text-yellow-400 font-sans shadow shadow-yellow-500/20' 
+                      : villagerQuestStarted
+                        ? golemKills >= 5
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 font-sans shadow shadow-emerald-500/20 animate-bounce'
+                          : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400 animate-pulse font-mono'
+                        : 'bg-rose-500/10 border-rose-500/30 text-rose-300 animate-pulse font-sans'
+                  }`}>
+                    <Key className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>
+                      {hasAreaKey 
+                        ? '🔑 極氷の鍵 所持' 
+                        : villagerQuestStarted
+                          ? golemKills >= 5
+                            ? '❄ ゴーレム撃破！村人に報告'
+                            : `❄ 試練: ゴーレム討伐 (${golemKills}/5)`
+                          : '🏡 凍氷国村人を探せ (0, 1)'
+                      }
+                    </span>
+                  </div>
+                )}
+                {currentArea === 3 && !lizardKingDefeated && (
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded border transition-all ${
+                    burningLizardKills >= 10 
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 font-sans shadow shadow-emerald-500/20' 
+                      : 'bg-amber-500/10 border-amber-500/30 text-amber-500 animate-pulse font-mono'
+                  }`}>
+                    <Flame className="w-3.5 h-3.5 text-orange-500 animate-bounce" />
+                    <span>{burningLizardKills >= 10 ? '👑 王への挑戦可能！(10/10)' : `🔥 試練: 獄炎トカゲ討伐 (${burningLizardKills}/10)`}</span>
+                  </div>
+                )}
+                {currentArea === 30 && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold bg-red-500/15 border border-red-500/40 text-red-200 font-mono rounded shadow-[0_0_10px_rgba(239,68,68,0.3)] animate-pulse">
+                    <Skull className="w-3.5 h-3.5 text-red-400" />
+                    <span>🌋 決戦！魔トカゲの宮殿 🌋</span>
+                  </div>
+                )}
+                {currentArea !== 2 && currentArea !== 4 && currentArea !== 30 && (
                   <div className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded border transition-all ${
                     carrierDefeated 
                       ? 'bg-purple-950/80 border-purple-800 text-purple-300' 
@@ -4671,9 +6320,11 @@ export default function App() {
                     <span>{carrierDefeated ? '輝きし敵 撃破' : '✨輝きし強敵(レア装備) 生息'}</span>
                   </div>
                 )}
-                <div className="text-xs bg-red-950/80 text-rose-300 font-mono border border-red-800 px-2 py-0.5 rounded">
-                  Boss at (2, 2)
-                </div>
+                {currentArea !== 30 && (
+                  <div className="text-xs bg-red-950/80 text-rose-300 font-mono border border-red-800 px-2 py-0.5 rounded">
+                    {currentArea === 3 && !lizardKingDefeated ? '王は門の前 (1, 2)' : currentArea === 4 ? (hasAreaKey ? 'Boss at (2, 2)' : '村人は (0, 1)') : 'Boss at (2, 2)'}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -4686,6 +6337,49 @@ export default function App() {
                 className="w-full h-full block bg-black"
                 title="Adventurer Active Action Screen"
               />
+
+              {/* Dynamic Retro RPG Dialogue Box Overlay */}
+              {activeDialogue && (
+                <div className="absolute inset-0 bg-black/60 flex items-end p-4 z-35 select-none animate-fade-in">
+                  <div className="bg-[#1e1515] border-2 border-red-800 w-full min-h-[100px] rounded-lg p-3.5 shadow-2xl flex flex-col gap-2 font-mono text-white relative">
+                    <div className="flex items-center justify-between border-b border-red-950 pb-1.5">
+                      <span className="text-red-500 font-extrabold text-xs flex items-center gap-1.5 animate-pulse">
+                        {activeDialogue.speaker}
+                      </span>
+                      <span className="text-[9px] text-gray-500 tracking-widest font-bold">TALK</span>
+                    </div>
+                    
+                    <p className="text-xs md:text-sm leading-relaxed text-gray-300 py-1 font-sans">
+                      {activeDialogue.text}
+                    </p>
+
+                    <div className="flex flex-col sm:flex-row gap-2 mt-1.5">
+                      {activeDialogue.options && activeDialogue.options.length > 0 ? (
+                        activeDialogue.options.map((opt, oIdx) => (
+                          <button
+                            key={oIdx}
+                            onClick={() => opt.action()}
+                            className="flex-1 text-center py-2 px-3 bg-red-950/55 hover:bg-red-900/40 border border-red-900 rounded text-red-200 text-xs transition active:scale-95 duration-100 font-bold"
+                          >
+                            {opt.text}
+                          </button>
+                        ))
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setActiveDialogue(null);
+                            (gameRef.current as any).activeDialogue = null;
+                            gameAudio.playCollect();
+                          }}
+                          className="w-full py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 rounded text-[11px] transition active:scale-95 font-bold"
+                        >
+                          閉じる [SPACE / ENTER]
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* HUD OVERLAY: Top-Left (Mini-map) and Top-Right (HP, GOLD, ATK, DEF) */}
               {!isGameOver && !hasWonFinal && !isBagOpen && (
@@ -5285,14 +6979,25 @@ export default function App() {
                 </button>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <button 
-                    onClick={triggerPortalTransition}
-                    className="py-2.5 font-bold text-xs rounded bg-purple-900 hover:bg-purple-800 text-purple-100 border border-purple-700 active:scale-95 transition flex items-center justify-center gap-1.5"
-                    title="ポータルの中心付近でタップします"
-                  >
-                    <Compass className="w-4 h-4 text-[#d946ef]" />
-                    <span>ポータルに入る [E]</span>
-                  </button>
+                  {currentArea === 3 && screenCoordinates.x === 1 && screenCoordinates.y === 2 && !lizardKingDefeated ? (
+                    <button 
+                      onClick={handleTalkToLizardKing}
+                      className="py-2.5 font-bold text-xs rounded bg-red-900 hover:bg-red-800 text-red-100 border border-red-700 active:scale-95 transition flex items-center justify-center gap-1.5 shadow-[0_0_8px_rgba(239,68,68,0.3)] animate-pulse"
+                      title="魔トカゲの王に話しかけます"
+                    >
+                      <MessageSquare className="w-4 h-4 text-red-400" />
+                      <span>王に話しかける [E]</span>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={triggerPortalTransition}
+                      className="py-2.5 font-bold text-xs rounded bg-purple-900 hover:bg-purple-800 text-purple-100 border border-purple-700 active:scale-95 transition flex items-center justify-center gap-1.5"
+                      title="ポータルの中心付近でタップします"
+                    >
+                      <Compass className="w-4 h-4 text-[#d946ef]" />
+                      <span>ポータルに入る [E]</span>
+                    </button>
+                  )}
 
                   <button 
                     onClick={() => {
