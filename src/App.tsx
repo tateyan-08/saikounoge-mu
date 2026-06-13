@@ -320,6 +320,7 @@ export default function App() {
     keyCarrierScreenY: -1,
     keyCarrierDefeated: true,
     gateAlertTimer: 0,
+    keyAcquiredAlertTimer: 0,
     areaKills: 0,
     isBagOpen: false,
     boostDuration: 0,
@@ -632,96 +633,140 @@ export default function App() {
       return;
     }
 
-    // Find the villager NPC object
-    const npc = gameRef.current.enemies.find(e => (e.type as any) === 'villager_npc');
-    if (!npc) {
+    // Find all villager NPC objects
+    const npcs = gameRef.current.enemies.filter(e => (e.type as any) === 'villager_npc');
+    if (npcs.length === 0) {
       return;
     }
 
-    const npcX = npc.x + npc.width / 2;
-    const npcY = npc.y + npc.height / 2;
-    const px = player.x + player.width / 2;
-    const py = player.y + player.height / 2;
+    // Find the closest villager NPC
+    let targetNpc = npcs[0];
+    let minDist = 999999;
+    npcs.forEach(n => {
+      const nX = n.x + n.width / 2;
+      const nY = n.y + n.height / 2;
+      const pX = player.x + player.width / 2;
+      const pY = player.y + player.height / 2;
+      const distance = Math.sqrt((nX - pX) ** 2 + (nY - pY) ** 2);
+      if (distance < minDist) {
+        minDist = distance;
+        targetNpc = n;
+      }
+    });
 
-    const dist = Math.sqrt((npcX - px) ** 2 + (npcY - py) ** 2);
-    if (dist <= 110) {
-      if (!villagerQuestStarted) {
-        setActiveDialogue({
-          speaker: '🏡 凍える村人',
-          text: '「この村を救ってくれ勇者様よ、ゴーレムを倒してくれもし、５体以上倒すことができたらまた来てくれ。」',
-          options: [
-            {
-              text: '⚔️ 任せておけ！ゴーレムを退治しよう！',
-              action: () => {
-                setActiveDialogue(null);
-                (gameRef.current as any).activeDialogue = null;
-                (gameRef.current as any).hasActiveDialogue = false;
-                setVillagerQuestStarted(true);
-                (gameRef.current as any).villagerQuestStarted = true;
-                addLog('❄ 【クエスト開始】 極光結晶ゴーレムを５体倒すミッションが課された！');
-                gameAudio.playCollect();
-              }
-            }
-          ]
-        });
-        (gameRef.current as any).activeDialogue = true;
-        (gameRef.current as any).hasActiveDialogue = true;
-        gameAudio.playCollect();
-      } else {
-        const kills = gameRef.current.golemKills || 0;
-        if (kills < 5) {
+    if (minDist <= 110) {
+      if (targetNpc.id === 'hint-villager-npc') {
+        // === 追加された「物知りな村人」の対話 ===
+        if (!villagerHintReceived) {
           setActiveDialogue({
-            speaker: '🏡 凍える村人',
-            text: `「極光結晶ゴーレムを５体以上倒したらまた声をかけてくれ。今は ${kills} / 5 体倒しているようだね。どうか頼んだぞ！」`,
+            speaker: '🏡 物知りな村人',
+            text: '「さすがです勇者様、勇者様には特別鍵 of ありかのヒントを教えいたします。この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。ご武運を。」',
+            options: [
+              {
+                text: '🔥 話を心に留め、鍵を探しにいく！',
+                action: () => {
+                  setActiveDialogue(null);
+                  (gameRef.current as any).activeDialogue = null;
+                  (gameRef.current as any).hasActiveDialogue = false;
+
+                  (gameRef.current as any).villagerHintReceived = true;
+                  setVillagerHintReceived(true);
+
+                  addLog('🏡 【ヒント獲得】 凍氷国の物知りな村人から鍵の隠し場所についてヒントを得た！');
+                  addLog('❄ 【凍結の掟】マップ上の「凍った岩」を、マグマポーションの効果を得た状態で攻撃して壊せ！');
+                  gameAudio.playPortal();
+                }
+              }
+            ]
+          });
+          // 依頼のセリフテキストをユーザー様の指定文言へ書き換え：
+          // 「さすがです勇者様、勇者様には特別鍵のありかのヒントを教えいたします。この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。ご武運を。」
+          setActiveDialogue({
+            speaker: '🏡 物知りな村人',
+            text: '「さすがです勇者様、勇者様には特別鍵のありかのヒントを教えいたします。この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。ご武運を。」',
+            options: [
+              {
+                text: '🔥 話を心に留め、鍵を探しにいく！',
+                action: () => {
+                  setActiveDialogue(null);
+                  (gameRef.current as any).activeDialogue = null;
+                  (gameRef.current as any).hasActiveDialogue = false;
+
+                  (gameRef.current as any).villagerHintReceived = true;
+                  setVillagerHintReceived(true);
+
+                  addLog('🏡 【ヒント獲得】 凍氷国の物知りな村人から鍵の隠し場所についてヒントを得た！');
+                  addLog('❄ 【凍結の掟】マップ上の「凍った岩」を、マグマポーションの効果を得た状態で攻撃して壊せ！');
+                  gameAudio.playPortal();
+                }
+              }
+            ]
           });
           (gameRef.current as any).activeDialogue = true;
           (gameRef.current as any).hasActiveDialogue = true;
           gameAudio.playCollect();
-        } else if (!hasAreaKey) {
-          // ゴーレム5体撃破達成＆まだ鍵を貰っていない時
-          if (!villagerHintReceived) {
+        } else {
+          setActiveDialogue({
+            speaker: '🏡 物知りな村人',
+            text: '「この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。マグマポーション（攻撃ブースト状態）の効果を得た状態で攻撃して壊すのです。ご武運を。」',
+          });
+          (gameRef.current as any).activeDialogue = true;
+          (gameRef.current as any).hasActiveDialogue = true;
+          gameAudio.playCollect();
+        }
+      } else {
+        // === 元からいる「凍える村人」の対話 ===
+        if (!villagerQuestStarted) {
+          setActiveDialogue({
+            speaker: '🏡 凍える村人',
+            text: '「この村を救ってくれ勇者様よ、ゴーレムを倒してくれもし、５体以上倒すことができたらまた来てくれ。」',
+            options: [
+              {
+                text: '⚔️ 任せておけ！ゴーレムを退治しよう！',
+                action: () => {
+                  setActiveDialogue(null);
+                  (gameRef.current as any).activeDialogue = null;
+                  (gameRef.current as any).hasActiveDialogue = false;
+                  setVillagerQuestStarted(true);
+                  (gameRef.current as any).villagerQuestStarted = true;
+                  addLog('❄ 【クエスト開始】 極光結晶ゴーレムを５体倒すミッションが課された！');
+                  gameAudio.playCollect();
+                }
+              }
+            ]
+          });
+          (gameRef.current as any).activeDialogue = true;
+          (gameRef.current as any).hasActiveDialogue = true;
+          gameAudio.playCollect();
+        } else {
+          const kills = gameRef.current.golemKills || 0;
+          if (kills < 5) {
             setActiveDialogue({
               speaker: '🏡 凍える村人',
-              text: '「さすがです勇者様、勇者様には特別鍵のありかのヒントを教えいたします。この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。ご武運を。」',
-              options: [
-                {
-                  text: '🔥 話を心に留め、鍵を探しにいく！',
-                  action: () => {
-                    setActiveDialogue(null);
-                    (gameRef.current as any).activeDialogue = null;
-                    (gameRef.current as any).hasActiveDialogue = false;
-
-                    (gameRef.current as any).villagerHintReceived = true;
-                    setVillagerHintReceived(true);
-
-                    addLog('🏡 【ヒント獲得】 凍氷国の村人から鍵の隠し場所についてヒントを得た！');
-                    addLog('❄ 【凍結の掟】マップ上の「凍った岩」を、マグマポーションの効果を得た状態で攻撃して壊せ！');
-                    gameAudio.playPortal();
-                  }
-                }
-              ]
+              text: `「極光結晶ゴーレムを５体以上倒したらまた声をかけてくれ。今は ${kills} / 5 体倒しているようだね。どうか頼んだぞ！」`,
+            });
+            (gameRef.current as any).activeDialogue = true;
+            (gameRef.current as any).hasActiveDialogue = true;
+            gameAudio.playCollect();
+          } else if (!hasAreaKey) {
+            // ゴーレム5体撃破達成＆まだ鍵を貰っていない時
+            setActiveDialogue({
+              speaker: '🏡 凍える村人',
+              text: '「おお！本当に極光結晶ゴーレムを５体倒してくれたのだな！本当にありがとうございます！鍵のありかについては、私の隣に現れた【物知りな村人】が何か知っているようです。ぜひお聞きくだされ！」',
             });
             (gameRef.current as any).activeDialogue = true;
             (gameRef.current as any).hasActiveDialogue = true;
             gameAudio.playCollect();
           } else {
+            // すでに鍵を獲得している場合
             setActiveDialogue({
               speaker: '🏡 凍える村人',
-              text: '「この国にはたくさんの凍った岩があります。その凍った岩のどれか一つに鍵が隠されています。マグマポーション（攻撃ブースト状態）の効果を得た状態で攻撃して壊すのです。ご武運を。」',
+              text: '「おお！ついに凍った岩から『極氷の鍵』を見つけ出したのですね！奥のエリア(2,2)に眠る『氷牙蒼龍グラキオス』は本当に恐ろしい龍だ。十分に装備を整えて挑まれるがよい！」',
             });
             (gameRef.current as any).activeDialogue = true;
             (gameRef.current as any).hasActiveDialogue = true;
             gameAudio.playCollect();
           }
-        } else {
-          // すでに鍵を獲得している場合
-          setActiveDialogue({
-            speaker: '🏡 凍える村人',
-            text: '「おお！ついに凍った岩から『極氷の鍵』を見つけ出したのですね！奥のエリア(2,2)に眠る『氷牙蒼龍グラキオス』は本当に恐ろしい龍だ。十分に装備を整えて挑まれるがよい！」',
-          });
-          (gameRef.current as any).activeDialogue = true;
-          (gameRef.current as any).hasActiveDialogue = true;
-          gameAudio.playCollect();
         }
       }
     } else {
@@ -910,7 +955,7 @@ export default function App() {
           id: 'villager-npc',
           type: 'villager_npc' as any,
           name: '🏡 凍える村人 【対話可能】',
-          x: 350,
+          x: 330, // 少し左に移動
           y: 205,
           width: 25,
           height: 38,
@@ -927,6 +972,31 @@ export default function App() {
           screenY,
           shootTimer: 0,
         } as any);
+
+        // ゴーレム５体討伐ミッションクリア時に、物知りな村人を隣に配置
+        if ((gameRef.current.golemKills || 0) >= 5) {
+          enemiesList.push({
+            id: 'hint-villager-npc',
+            type: 'villager_npc' as any,
+            name: '🏡 物知りな村人 【対話可能】',
+            x: 380, // 初期の村人の右横
+            y: 205,
+            width: 25,
+            height: 38,
+            hp: 9999,
+            maxHp: 9999,
+            atk: 0,
+            def: 999,
+            speed: 0,
+            color: '#a5f3fc',
+            isAggressive: false,
+            shootCooldown: 999999,
+            behavior: 'wander',
+            screenX,
+            screenY,
+            shootTimer: 0,
+          } as any);
+        }
       }
 
       // Normal map screens: Spawn 2 to 4 mobs depending on Area difficulty
@@ -1279,11 +1349,21 @@ export default function App() {
             if (rock.hasKey) {
               gameRef.current.hasAreaKey = true;
               setHasAreaKey(true);
-              gameRef.current.gateOpened = true;
-              setGateOpened(true);
+              (gameRef.current as any).keyAcquiredAlertTimer = 180;
               addLog('🔑 【極氷の鍵を発見！】 凍った岩をマグマの力で打ち砕くと、中から眩しく輝く 【極氷の鍵】 が見つかった！');
-              addLog('🔑 これにより、ボスエリア(2,2)への厳重な大門が静かに開かれた！');
+              addLog('🔑 【鍵会得】 極氷の鍵を会得した！ ボスエリア(2,2)の大門に行き、鍵を開けよう！');
               
+              // プレイヤーの頭上にフローティングテキスト「✨🔑 鍵会得！ 🔑✨」を表示
+              gameRef.current.floatingTexts.push({
+                id: `key-acquire-float-${Math.random()}`,
+                text: `✨🔑 鍵会得！ 🔑✨`,
+                x: player.x - 20,
+                y: player.y - 30,
+                color: '#fbbf24',
+                alpha: 1,
+                life: 120
+              });
+
               for (let cp = 0; cp < 40; cp++) {
                 gameRef.current.particles.push({
                   id: `key-found-${Math.random()}`,
@@ -1562,6 +1642,34 @@ export default function App() {
       gameRef.current.golemKills = nextKills;
       setGolemKills(nextKills);
       addLog(`❄ 極光結晶ゴーレムを討伐しました！ (${nextKills}/5)`);
+
+      // 5体討伐達成時、現在のマップが村人画面(0,1)であれば、即時に「物知りな村人」をシーンに登場させる
+      if (nextKills >= 5 && gameRef.current.area === 4 && gameRef.current.player.screenX === 0 && gameRef.current.player.screenY === 1) {
+        const hasHintNpc = gameRef.current.enemies.some(e => e.id === 'hint-villager-npc');
+        if (!hasHintNpc) {
+          gameRef.current.enemies.push({
+            id: 'hint-villager-npc',
+            type: 'villager_npc' as any,
+            name: '🏡 物知りな村人 【対話可能】',
+            x: 380,
+            y: 205,
+            width: 25,
+            height: 38,
+            hp: 9999,
+            maxHp: 9999,
+            atk: 0,
+            def: 999,
+            speed: 0,
+            color: '#a5f3fc',
+            isAggressive: false,
+            shootCooldown: 999999,
+            behavior: 'wander',
+            screenX: 0,
+            screenY: 1,
+            shootTimer: 0,
+          } as any);
+        }
+      }
     }
 
     gameRef.current.player.kills += 1;
@@ -2091,6 +2199,9 @@ export default function App() {
       // Decrement gate alert warning duration
       if (gameRef.current.gateAlertTimer > 0) {
         gameRef.current.gateAlertTimer--;
+      }
+      if ((gameRef.current as any).keyAcquiredAlertTimer > 0) {
+        (gameRef.current as any).keyAcquiredAlertTimer--;
       }
 
       // Attack cooldown timers
@@ -4547,10 +4658,16 @@ export default function App() {
         const areaNum = gameRef.current.area;
         
         if (enemy.type === 'villager_npc') {
-          // === 凍える村人 ===
+          // === 凍える村人 / 物知りな村人 ===
           // あったかそうな北皮ケープ＆フードを着た姿
-          // フード（水色/シアン）
-          ctx.fillStyle = '#0284c7'; // コバルトブルー
+          // 物知りな村人はゴールドオレンジの服と緑色のマフラーで対比的に差別化
+          const isHintNpc = enemy.id === 'hint-villager-npc';
+          const hoodColor = isHintNpc ? '#f59e0b' : '#0284c7';
+          const eyeStrokeColor = isHintNpc ? '#78350f' : '#0284c7';
+          const scarfColor = isHintNpc ? '#10b981' : '#ef4444';
+
+          // フード
+          ctx.fillStyle = hoodColor;
           ctx.beginPath();
           ctx.arc(0, -5, enemy.height * 0.45, 0, Math.PI * 2);
           ctx.fill();
@@ -4576,7 +4693,7 @@ export default function App() {
           ctx.fill();
 
           // 閉じた目（寒そうに震えている）
-          ctx.strokeStyle = '#0284c7';
+          ctx.strokeStyle = eyeStrokeColor;
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           // 左目
@@ -4587,8 +4704,8 @@ export default function App() {
           ctx.lineTo(2, -4);
           ctx.stroke();
 
-          // 極上のあったかマフラー (赤色)
-          ctx.fillStyle = '#ef4444';
+          // 極上のあったかマフラー
+          ctx.fillStyle = scarfColor;
           ctx.beginPath();
           ctx.roundRect(-enemy.width * 0.4, 4, enemy.width * 0.8, 6, 2);
           ctx.fill();
@@ -6008,6 +6125,40 @@ export default function App() {
         ctx.shadowBlur = 0;
       });
       ctx.globalAlpha = 1.0;
+
+      // Render key acquired alert centered card
+      if ((gameRef.current as any).keyAcquiredAlertTimer > 0) {
+        ctx.save();
+        
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
+        ctx.strokeStyle = '#fbbf24';
+        ctx.lineWidth = 3;
+        
+        const rectW = 450;
+        const rectH = 105;
+        const rectX = (CANVAS_WIDTH - rectW) / 2;
+        const rectY = (CANVAS_HEIGHT - rectH) / 2 - 30;
+        
+        ctx.beginPath();
+        ctx.roundRect(rectX, rectY, rectW, rectH, 12);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.textAlign = 'center';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+        ctx.shadowBlur = 5;
+        
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText('🔑 ✨ 鍵会得！ ✨ 🔑', CANVAS_WIDTH / 2, rectY + 38);
+
+        const blink = Math.floor(Date.now() / 200) % 2 === 0;
+        ctx.fillStyle = blink ? '#ffffff' : '#fef08a';
+        ctx.font = 'bold 17px sans-serif';
+        ctx.fillText('【極氷の鍵をカバンにしまいました】', CANVAS_WIDTH / 2, rectY + 74);
+        
+        ctx.restore();
+      }
 
       // Render boss room gating warning centered card
       if (gameRef.current.gateAlertTimer > 0) {
