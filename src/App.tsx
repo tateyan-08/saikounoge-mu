@@ -429,6 +429,11 @@ export default function App() {
     gameRef.current.keyCarrierDefeated = false;
     setCarrierDefeated(false);
 
+    (gameRef.current as any).frozenRocks = [];
+    (gameRef.current as any).villagerHintReceived = false;
+    setFrozenRocks([]);
+    setVillagerHintReceived(false);
+
     if (areaId === 2 || areaId === 3 || areaId === 4) {
       // エリア2, 3, 4: 門を開けるのに鍵が必要。初期状態は未所持、未開。
       setHasAreaKey(false);
@@ -481,11 +486,6 @@ export default function App() {
         (gameRef.current as any).frozenRocks = rocks;
         (gameRef.current as any).villagerHintReceived = false;
         setFrozenRocks(rocks);
-        setVillagerHintReceived(false);
-      } else {
-        (gameRef.current as any).frozenRocks = [];
-        (gameRef.current as any).villagerHintReceived = false;
-        setFrozenRocks([]);
         setVillagerHintReceived(false);
       }
     } else if (areaId === 1) {
@@ -2503,8 +2503,9 @@ export default function App() {
             addLog(`❄ 【絶対零度】 氷牙蒼龍グラキオスは、吹雪吹き荒れる絶対零度のブレスを解き放った！`);
             gameRef.current.screenShake = 16;
             
-            // 攻撃後の大きな硬直（回復チャンス）を設定 (60フレーム＝1.0秒)
-            enemy.stiffenTimer = 65;
+            // 攻撃後の大きな硬直（回復チャンス）を設定
+            enemy.stiffenTimer = 240; // 4.0秒の大きな硬直
+            addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが体勢を崩している！攻撃のチャンス！（約4秒間）`);
             enemy.isAttackingChain = false;
             enemy.shootTimer = 0;
           }
@@ -2548,7 +2549,7 @@ export default function App() {
 
         // 2. Active locked attack sequence: forces attack to execute immediately once charge starts
         if (enemy.isAttackingChain) {
-          const triggerShootCap = enemy.type === 'boss' ? 55 : (enemy.shootCooldown || 120);
+          const triggerShootCap = enemy.type === 'boss' ? 110 : (enemy.shootCooldown || 120);
 
           if (!enemy.shootTimer) {
             enemy.shootTimer = 0;
@@ -2622,7 +2623,8 @@ export default function App() {
                     });
                   }
                 }
-                stiffenLen = 50; // 硬直時間を長くして攻撃チャンスを増やす
+                stiffenLen = 240; // 硬直時間4秒（240フレーム）
+                addLog(`⚡ 【好機】 深淵の魔王が大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
               } else if (area === 2) {
                 // === エリア2ボス：双頭魔獣キマイラ独自のご馳走弾幕パターン！ ===
                 // 獅子頭の紅炎扇（プレイヤー狙い・隙間があって避けやすい） or 山羊頭の呪詛砂晶（花びら螺旋全方位）
@@ -2672,7 +2674,8 @@ export default function App() {
                     });
                   }
                 }
-                stiffenLen = 42; // 硬直時間を長くし、反撃と回避のメリハリをつけやすく調整
+                stiffenLen = 240; // 硬直時間4秒（240フレーム）
+                addLog(`⚡ 【好機】 双頭魔獣キマイラが大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
               } else if (area === 4) {
                 // === エリア4ボス：氷牙蒼龍グラキオス独自攻撃パターン！ ===
                 if (enemy.bossAttackCycle === undefined) {
@@ -2687,7 +2690,7 @@ export default function App() {
                   stiffenLen = 0; // 予兆カウント自体が動作硬直となる
                   addLog(`⚠️ 【予兆：氷牙蒼龍】グラキオスが首を回し、冷気のブレスを吐くチャージを開始した！`);
                 } else {
-                  // 通常攻撃の氷晶弾（ダイヤモンド状の8方向美弾幕）
+                  // 通常攻撃の氷晶弾（ダイヤモンド状 of 8方向美弾幕）
                   const projCount = 8;
                   const baseAngle = Math.random() * Math.PI;
                   for (let i = 0; i < projCount; i++) {
@@ -2706,7 +2709,8 @@ export default function App() {
                       isGlaciosIceCrystal: true,
                     });
                   }
-                  stiffenLen = 40; // 攻撃の後に反撃できるスキを作る
+                  stiffenLen = 240; // 硬直時間4秒（240フレーム）
+                  addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
                 }
               } else {
                 // 通常ボスの全方位弾
@@ -2728,7 +2732,8 @@ export default function App() {
                     screenY: player.screenY,
                   });
                 }
-                stiffenLen = 38; // Boss recovery: 38 frames (approx 0.63 seconds)
+                stiffenLen = 240; // 硬直時間4秒（240フレーム）
+                addLog(`⚡ 【好機】 ボスが攻撃を終えて大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
               }
             } else if (area >= 2) {
               // Normal ranged monster shoots targeted orb
@@ -2873,8 +2878,8 @@ export default function App() {
           // Calculate attack & preparation timings. Every aggressive enemy stops to prepare their attack first!
           const angle = Math.atan2(py - ey, px - ex);
           
-          const triggerShootCap = enemy.type === 'boss' ? 55 : (enemy.shootCooldown || 120);
-          const prepDuration = enemy.type === 'boss' ? 24 : 35; // Pause frames before striking / shooting
+          const triggerShootCap = enemy.type === 'boss' ? 110 : (enemy.shootCooldown || 120);
+          const prepDuration = enemy.type === 'boss' ? 35 : 35; // Pause frames before striking / shooting
           
           if (!enemy.shootTimer) {
             enemy.shootTimer = 0;
@@ -4545,8 +4550,8 @@ export default function App() {
         
         const isStiffened = (enemy.stiffenTimer || 0) > 0;
 
-        const triggerShootCap = isBoss ? 55 : (enemy.shootCooldown || 120);
-        const prepDuration = isBoss ? 24 : 35;
+        const triggerShootCap = isBoss ? 110 : (enemy.shootCooldown || 120);
+        const prepDuration = isBoss ? 35 : 35;
         // Preparing attack is only possible if not currently stiffened and actually within charge windows
         const isPreparingAttack = !isStiffened && (enemy.shootTimer || 0) > (triggerShootCap - prepDuration) && (enemy.isAttackingChain || false);
 
