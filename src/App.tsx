@@ -375,10 +375,12 @@ export default function App() {
   // Calculate current effective fighting stats
   const coreStats = useMemo(() => {
     const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
+    const avgReduction = Math.round(defenseBonus / 3);
     const attackBonus = equippedSword.statValue;
     return {
       atk: gameRef.current.player.baseAtk + attackBonus + (boostTimeLeft > 0 ? 10 : 0),
-      def: gameRef.current.player.baseDef + defenseBonus,
+      def: gameRef.current.player.baseDef,
+      avgReduction, // Average of Hat + Armor + Pants as percentage reduction
     };
   }, [equippedHat, equippedArmor, equippedPants, equippedSword, playerLevel, boostTimeLeft]);
 
@@ -885,7 +887,7 @@ export default function App() {
         height: 70,
         hp: 600,
         maxHp: 600,
-        atk: 32,
+        atk: 55, // エリア3以降のボス攻撃力引き上げ (42 -> 55)
         def: 9,
         speed: 1.1,
         color: '#dc2626',
@@ -910,7 +912,7 @@ export default function App() {
           height: 70,
           hp: areaId * 180 + 100,
           maxHp: areaId * 180 + 100,
-          atk: areaId * 12 + 10,
+          atk: areaId === 1 ? (areaId * 12 + 10) : areaId === 2 ? (areaId * 12 + 32) : (areaId * 12 + 35), // エリア2キマイラの基礎攻撃力を引き上げ (20 -> 32)、エリア3以降のボス攻撃力をさらに引き上げ
           def: areaId * 4 + 3,
           speed: 0.9 + (areaId * 0.08),
           color: area.bossColor,
@@ -2394,8 +2396,8 @@ export default function App() {
         if (gameRef.current.enemies.length < 2 && Math.random() < 0.003) {
           // Respawn mob
           const mobNames = {
-            1: ['グリーンスライム', '草原の牙蜘蛛'],
-            2: ['針コパースコーピオン', '砂漠の魔石兵'],
+            1: ['グリーンスライム', '草原 of 牙蜘蛛'],
+            2: ['針コパースコーピオン', '砂漠 of 魔石兵'],
             3: ['獄炎トカゲ', 'マグマバット'],
             4: ['フリーズスプライト', '極光結晶ゴーレム'],
             5: ['エンドレスビクター', '深淵虚黒這い']
@@ -2491,7 +2493,7 @@ export default function App() {
                 dx: Math.cos(pAngle) * bSpeed,
                 dy: Math.sin(pAngle) * bSpeed,
                 radius: 12, // 通常より大きい当たり判定
-                damage: 22, // 氷のブレスは高威力
+                damage: 48, // エリア3以降のボス攻撃力引き上げ (32 -> 48)
                 color: '#818cf8',
                 screenX: player.screenX,
                 screenY: player.screenY,
@@ -2504,8 +2506,8 @@ export default function App() {
             gameRef.current.screenShake = 16;
             
             // 攻撃後の大きな硬直（回復チャンス）を設定
-            enemy.stiffenTimer = 240; // 4.0秒の大きな硬直
-            addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが体勢を崩している！攻撃のチャンス！（約4秒間）`);
+            enemy.stiffenTimer = 150; // 2.5秒の大きな硬直
+            addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが体勢を崩している！攻撃のチャンス！（約2.5秒間）`);
             enemy.isAttackingChain = false;
             enemy.shootTimer = 0;
           }
@@ -2595,7 +2597,7 @@ export default function App() {
                       dx: Math.cos(pAngle) * 4.2, // 弾速を11.2からおよそ4.2に落とす
                       dy: Math.sin(pAngle) * 4.2,
                       radius: 12, // マイルドなサイズ
-                      damage: 18, // 攻撃力をマイルドに調整
+                      damage: 38, // エリア3以降のボス攻撃力引き上げ (18 -> 38)
                       color: '#f97316',
                       screenX: player.screenX,
                       screenY: player.screenY,
@@ -2615,7 +2617,7 @@ export default function App() {
                       dx: Math.cos(pAngle) * 3.2,
                       dy: Math.sin(pAngle) * 3.2,
                       radius: 12,
-                      damage: 16,
+                      damage: 36, // エリア3以降のボス攻撃力引き上げ (16 -> 36)
                       color: '#f97316',
                       screenX: player.screenX,
                       screenY: player.screenY,
@@ -2623,8 +2625,8 @@ export default function App() {
                     });
                   }
                 }
-                stiffenLen = 240; // 硬直時間4秒（240フレーム）
-                addLog(`⚡ 【好機】 深淵の魔王が大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
+                stiffenLen = 150; // 硬直時間2.5秒（150フレーム）
+                addLog(`⚡ 【好機】 深淵の魔王が大きな隙を晒している！今が攻撃のチャンスだ！(2.5秒間)`);
               } else if (area === 2) {
                 // === エリア2ボス：双頭魔獣キマイラ独自のご馳走弾幕パターン！ ===
                 // 獅子頭の紅炎扇（プレイヤー狙い・隙間があって避けやすい） or 山羊頭の呪詛砂晶（花びら螺旋全方位）
@@ -2632,7 +2634,7 @@ export default function App() {
                 const playerAngle = Math.atan2(py - ey, px - ex);
 
                 if (patternType === 'lion_fire') {
-                  // パターン1: 獅子頭の紅炎扇 (5本立て)
+                  // パターン1: 獅子頭 of 紅炎扇 (5本立て)
                   const fanCount = 5;
                   const spread = 0.55; // 拡散範囲
                   for (let i = 0; i < fanCount; i++) {
@@ -2645,15 +2647,15 @@ export default function App() {
                       dx: Math.cos(pAngle) * 3.6, // 避けやすい速度
                       dy: Math.sin(pAngle) * 3.6,
                       radius: 9,
-                      damage: 14,
-                      color: '#ef4444', // 紅蓮の真赤
+                      damage: 32, // 紅炎扇のダメージを引き上げ (14 -> 32)
+                      color: '#ef4444', // 紅蓮 of 真赤
                       screenX: player.screenX,
                       screenY: player.screenY,
                       isChimeraFire: true,
                     });
                   }
                 } else {
-                  // パターン2: 山羊頭の呪詛魔晶 (螺旋全方位 / 速度を交互に変えることで非常に美しい波状かつ安全な弾幕に！)
+                  // パターン2: 山羊頭 of 呪詛魔晶 (螺旋全方位 / 速度を交互に変えることで非常に美しい波状かつ安全な弾幕に！)
                   const projCount = 8;
                   const baseAngle = Math.random() * Math.PI;
                   for (let i = 0; i < projCount; i++) {
@@ -2666,16 +2668,16 @@ export default function App() {
                       dx: Math.cos(pAngle) * speed,
                       dy: Math.sin(pAngle) * speed,
                       radius: 8,
-                      damage: 12,
-                      color: '#eab308', // 黄金色の呪霊砂晶
+                      damage: 28, // 呪詛魔晶のダメージを引き上げ (12 -> 28)
+                      color: '#eab308', // 黄金色 of 呪霊砂晶
                       screenX: player.screenX,
                       screenY: player.screenY,
                       isChimeraCursedSand: true,
                     });
                   }
                 }
-                stiffenLen = 240; // 硬直時間4秒（240フレーム）
-                addLog(`⚡ 【好機】 双頭魔獣キマイラが大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
+                stiffenLen = 150; // 硬直時間2.5秒（150フレーム）
+                addLog(`⚡ 【好機】 双頭魔獣キマイラが大きな隙を晒している！今が攻撃のチャンスだ！(2.5秒間)`);
               } else if (area === 4) {
                 // === エリア4ボス：氷牙蒼龍グラキオス独自攻撃パターン！ ===
                 if (enemy.bossAttackCycle === undefined) {
@@ -2702,15 +2704,15 @@ export default function App() {
                       dx: Math.cos(pAngle) * 3.4,
                       dy: Math.sin(pAngle) * 3.4,
                       radius: 8,
-                      damage: 16,
+                      damage: 38, // エリア3以降のボス攻撃力引き上げ (16 -> 38)
                       color: '#38bdf8',
                       screenX: player.screenX,
                       screenY: player.screenY,
                       isGlaciosIceCrystal: true,
                     });
                   }
-                  stiffenLen = 240; // 硬直時間4秒（240フレーム）
-                  addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
+                  stiffenLen = 150; // 硬直時間2.5秒（150フレーム）
+                  addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが大きな隙を晒している！今が攻撃のチャンスだ！(2.5秒間)`);
                 }
               } else {
                 // 通常ボスの全方位弾
@@ -2726,14 +2728,14 @@ export default function App() {
                     dx: Math.cos(pAngle) * (2.2 + area * 0.3),
                     dy: Math.sin(pAngle) * (2.2 + area * 0.3),
                     radius: 7 + area,
-                    damage: area * 6 + 6,
+                    damage: area <= 2 ? (area * 6 + 6) : (area * 6 + 28), // エリア3以降のボス攻撃力引き上げ
                     color: activeArea.accentColor,
                     screenX: player.screenX,
                     screenY: player.screenY,
                   });
                 }
-                stiffenLen = 240; // 硬直時間4秒（240フレーム）
-                addLog(`⚡ 【好機】 ボスが攻撃を終えて大きな隙を晒している！今が攻撃のチャンスだ！(4秒間)`);
+                stiffenLen = 150; // 硬直時間2.5秒（150フレーム）
+                addLog(`⚡ 【好機】 ボスが攻撃を終えて大きな隙を晒している！今が攻撃のチャンスだ！(2.5秒間)`);
               }
             } else if (area >= 2) {
               // Normal ranged monster shoots targeted orb
@@ -2824,9 +2826,12 @@ export default function App() {
                 if (now - player.lastHurtTime > 600) {
                   player.lastHurtTime = now;
                   
-                  // Def calculations (Hat + Armor + Pants)
-                  const defenseRating = gameRef.current.player.baseDef + equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
-                  const finalDmg = Math.max(1, enemy.atk - defenseRating);
+                  // Def calculations: Base DEF subtracts flatly, rounded average of (Hat + Armor + Pants) reduces as % rate.
+                  const baseDef = gameRef.current.player.baseDef;
+                  const rawBaseDamage = Math.max(1, enemy.atk - baseDef);
+                  const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
+                  const avgReductionPercent = Math.round(defenseBonus / 3);
+                  const finalDmg = Math.max(1, Math.round(rawBaseDamage * (1 - avgReductionPercent / 100)));
                   player.hp -= finalDmg;
 
                   // Update state
@@ -2860,7 +2865,7 @@ export default function App() {
                     life: 40
                   });
 
-                  addLog(`💔 「${enemy.name}」の素早い直接打撃！ ${finalDmg} のダメージを受けた。 (防御力により護られたダメージ: ${equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue})`);
+                  addLog(`💔 「${enemy.name}」の素早い直接打撃！ ${finalDmg} のダメージを受けた。 (防具ダメージ軽減: ${avgReductionPercent}%)`);
                 }
               }
 
@@ -2950,8 +2955,11 @@ export default function App() {
           if (now - player.lastHurtTime > 600) {
             player.lastHurtTime = now;
             
-            const defenseRating = gameRef.current.player.baseDef + equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
-            const finalDmg = Math.max(1, p.damage - defenseRating);
+            const baseDef = gameRef.current.player.baseDef;
+            const rawBaseDamage = Math.max(1, p.damage - baseDef);
+            const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
+            const avgReductionPercent = Math.round(defenseBonus / 3);
+            const finalDmg = Math.max(1, Math.round(rawBaseDamage * (1 - avgReductionPercent / 100)));
             player.hp -= finalDmg;
             setPlayerHP(player.hp);
 
@@ -6614,7 +6622,7 @@ export default function App() {
                       <div className="flex items-center gap-1">
                         <Shield className="w-3.5 h-3.5 text-[#38bdf8]" />
                         <span className="text-gray-400 text-[9px]">DEF:</span>
-                        <span className="text-[#38bdf8] font-extrabold">{coreStats.def}</span>
+                        <span className="text-[#38bdf8] font-extrabold">{coreStats.def} (-{coreStats.avgReduction}%)</span>
                       </div>
                     </div>
 
@@ -6952,6 +6960,11 @@ export default function App() {
                               <p className="text-gray-400 text-[10px] leading-relaxed italic max-h-[50px] overflow-y-auto pr-0.5">
                                 "{selectedItem.description}"
                               </p>
+                              {['hat', 'armor', 'pants'].includes(selectedItem.type) && (
+                                <p className="text-[#38bdf8] text-[9px] mt-1 leading-tight">
+                                  💡 装備防御補正: 頭・胴・脚のステータス合計の平均 (四捨五入) の割合 (%)、敵から受けるダメージを軽減します。
+                                </p>
+                              )}
                             </div>
                           </div>
 
