@@ -23,7 +23,9 @@ import {
   ChevronRight,
   Info,
   Key,
-  MessageSquare
+  MessageSquare,
+  Store,
+  Lock
 } from 'lucide-react';
 import { Player, Enemy, Projectile, DropItem, FloatingText, Particle, GameArea, Item, ItemType } from './types';
 import { gameAudio } from './utils/audio';
@@ -128,7 +130,46 @@ interface FrozenRock {
   isDestroyed: boolean;
 }
 
+interface GimmickEye {
+  id: string;
+  hour: number;
+  x: number;
+  y: number;
+  r: number;
+  isActivated: boolean;
+}
+
 function getObstaclesForScreen(areaId: number, screenX: number, screenY: number, gateOpened: boolean = true): Obstacle[] {
+  // Area 5 Clock eye Gimmick Screen (1, 1) has a custom circular clock arrangement
+  if (areaId === 5 && screenX === 1 && screenY === 1) {
+    const list: Obstacle[] = [];
+    const centerX = 400;
+    const centerY = 240;
+    const radius = 140;
+
+    for (let h = 1; h <= 12; h++) {
+      const theta = -Math.PI / 2 + h * (Math.PI / 6);
+      const x = centerX + radius * Math.cos(theta);
+      const y = centerY + radius * Math.sin(theta);
+      list.push({
+        x,
+        y,
+        r: 20,
+        type: `gimmick_eye_${h}`
+      });
+    }
+
+    // Central ancient book of hint
+    list.push({
+      x: centerX,
+      y: centerY,
+      r: 25,
+      type: 'gimmick_book'
+    });
+
+    return list;
+  }
+
   // Simple seed generator to keep obstacles static but varied per screen coords
   const seed = areaId * 13 + screenX * 37 + screenY * 73;
   const obstacles: Obstacle[] = [];
@@ -270,6 +311,8 @@ export default function App() {
   const [equippedArmor, setEquippedArmor] = useState<Item>(getDefaultEquipment().armor);
   const [equippedPants, setEquippedPants] = useState<Item>(getDefaultEquipment().pants);
   const [equippedSword, setEquippedSword] = useState<Item>(getDefaultEquipment().sword);
+  const [equippedShield, setEquippedShield] = useState<Item | null>(null);
+  const [hasReceivedArea5Shield, setHasReceivedArea5Shield] = useState<boolean>(false);
 
   // Inventory & Game controls
   const [inventory, setInventory] = useState<Item[]>([
@@ -292,6 +335,9 @@ export default function App() {
   const [carrierDefeated, setCarrierDefeated] = useState<boolean>(false);
   const [areaKills, setAreaKills] = useState<number>(0);
   const [isBagOpen, setIsBagOpen] = useState<boolean>(false);
+  const [shopUnlocked, setShopUnlocked] = useState<boolean>(false);
+  const [isShopOpen, setIsShopOpen] = useState<boolean>(false);
+  const [shopEquipment, setShopEquipment] = useState<{ item: Item; price: number; sold: boolean }[]>([]);
   const [boostTimeLeft, setBoostTimeLeft] = useState<number>(0);
   const [isPlayerFrozen, setIsPlayerFrozen] = useState<boolean>(false);
   
@@ -304,6 +350,10 @@ export default function App() {
   const [villagerQuestStarted, setVillagerQuestStarted] = useState<boolean>(false);
   const [frozenRocks, setFrozenRocks] = useState<FrozenRock[]>([]);
   const [villagerHintReceived, setVillagerHintReceived] = useState<boolean>(false);
+
+  // Area 5 Clock Gimmick states
+  const [gimmickEyes, setGimmickEyes] = useState<GimmickEye[]>([]);
+  const [gimmickSolved, setGimmickSolved] = useState<boolean>(false);
 
   const [activeDialogue, setActiveDialogue] = useState<{ speaker: string; text: string; options?: { text: string; action: () => void }[] } | null>(null);
 
@@ -323,6 +373,7 @@ export default function App() {
     keyAcquiredAlertTimer: 0,
     areaKills: 0,
     isBagOpen: false,
+    isShopOpen: false,
     boostDuration: 0,
     burningLizardKills: 0,
     lizardKingDefeated: false,
@@ -350,6 +401,8 @@ export default function App() {
       attackAnimFrame: 0,
       lastHurtTime: 0,
       freezeDuration: 0,
+      shieldActiveTimer: 0,
+      shieldCooldown: 0,
     },
     keys: {} as Record<string, boolean>,
     enemies: [] as Enemy[],
@@ -370,19 +423,21 @@ export default function App() {
     bossSpawned: false,
     frozenRocks: [] as FrozenRock[],
     villagerHintReceived: false,
+    gimmickEyes: [] as GimmickEye[],
+    gimmickSolved: false,
   });
 
   // Calculate current effective fighting stats
   const coreStats = useMemo(() => {
-    const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
-    const avgReduction = Math.round(defenseBonus / 3);
+    const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue + (equippedShield ? equippedShield.statValue : 0);
+    const avgReduction = Math.round(defenseBonus / (equippedShield ? 4 : 3));
     const attackBonus = equippedSword.statValue;
     return {
       atk: gameRef.current.player.baseAtk + attackBonus + (boostTimeLeft > 0 ? 10 : 0),
       def: gameRef.current.player.baseDef,
-      avgReduction, // Average of Hat + Armor + Pants as percentage reduction
+      avgReduction, // Average of Hat + Armor + Pants + Shield as percentage reduction
     };
-  }, [equippedHat, equippedArmor, equippedPants, equippedSword, playerLevel, boostTimeLeft]);
+  }, [equippedHat, equippedArmor, equippedPants, equippedSword, equippedShield, playerLevel, boostTimeLeft]);
 
   // Synchronize dynamic quest variables to gameRef for performance and thread-safe key polling
   if (gameRef.current) {
@@ -392,12 +447,16 @@ export default function App() {
       setActiveDialogue(null);
       (gameRef.current as any).activeDialogue = null;
     };
+    (gameRef.current as any).equippedShield = equippedShield;
     (gameRef.current as any).lizardKingDefeated = lizardKingDefeated;
     (gameRef.current as any).burningLizardKills = burningLizardKills;
     (gameRef.current as any).golemKills = golemKills;
     (gameRef.current as any).villagerQuestStarted = villagerQuestStarted;
     (gameRef.current as any).frozenRocks = frozenRocks;
     (gameRef.current as any).villagerHintReceived = villagerHintReceived;
+    (gameRef.current as any).gimmickEyes = gimmickEyes;
+    (gameRef.current as any).gimmickSolved = gimmickSolved;
+    gameRef.current.isShopOpen = isShopOpen;
   }
 
   // Audio switcher
@@ -412,6 +471,132 @@ export default function App() {
       const next = [msg, ...prev];
       return next.slice(0, 35); // Keep last 35
     });
+  };
+
+  // Trigger shop addition message when reaching Area 4
+  useEffect(() => {
+    if (currentArea === 4 && !shopUnlocked) {
+      setShopUnlocked(true);
+      addLog("🛒 【ショップ追加！】エリア４に到達したため、どこでも取引可能な『時空の便利ショップ』が追加されました！バックアイコンの左隣のショップアイコンをタップして開くことができます。");
+    }
+  }, [currentArea, shopUnlocked]);
+
+  // Trigger shield addition, announcement, and distribution when reaching Area 5
+  useEffect(() => {
+    if (currentArea === 5 && !hasReceivedArea5Shield) {
+      setHasReceivedArea5Shield(true);
+      
+      const aegaeisShield: Item = {
+        id: `shield-granted-area5-${Math.random().toString(36).substr(2, 5)}`,
+        name: '🛡️不破の神盾 イージス',
+        type: 'shield',
+        statValue: 25,
+        rarity: 'legendary',
+        area: 5,
+        description: 'エリア５到達の栄誉を称え、時空を超えて授けられた不滅の神盾。あらゆる邪悪な一撃を無へと還す。装備すると防御力を大きく上昇する。（防御力+25）',
+        color: '#f59e0b',
+      };
+
+      setInventory(prev => [...prev, aegaeisShield]);
+      setEquippedShield(aegaeisShield);
+      
+      setActiveDialogue({
+        speaker: '🛡️ 【新防具カテゴリ：盾解放・自動装備！】',
+        text: 'エリア５「深淵の世界」へ到達したことで、新たに左手に装備可能な第二の防具カテゴリ『盾のスロット』が解放されました！敵から受けるダメージをさらに大幅に軽減させることができます。記念として、伝説品質「🛡️不破の神盾 イージス （防御力+25）」が自動的に装備されました！ [B] キーまたはボタンで盾を正面に構えてガード防御を試みましょう！'
+      });
+
+      addLog("🛡️ 【新装備解放】エリア５到達を検知し、『盾のスロット』が解放され、「🛡️不破の神盾 イージス」が自動装備されました！");
+      gameAudio.playCollect();
+    }
+  }, [currentArea, hasReceivedArea5Shield]);
+
+  // Shop item generators and transactions
+  const generateShopItems = () => {
+    const items: { item: Item; price: number; sold: boolean }[] = [];
+    for (let i = 0; i < 5; i++) {
+      // Generate items scaled to current Area or at least Area 4
+      const areaToUse = Math.max(4, currentArea);
+      const randItem = generateItem(areaToUse);
+      
+      // Calculate rarity-based price
+      let priceBase = 150;
+      if (randItem.rarity === 'common') {
+        priceBase = 150;
+      } else if (randItem.rarity === 'rare') {
+        priceBase = 450;
+      } else if (randItem.rarity === 'epic') {
+        priceBase = 1100;
+      } else if (randItem.rarity === 'legendary') {
+        priceBase = 2800;
+      }
+
+      // Add variation based on stats value
+      const valBonus = randItem.statValue * 3;
+      const finalPrice = Math.round((priceBase + valBonus) * (0.85 + Math.random() * 0.3));
+      
+      items.push({
+        item: randItem,
+        price: finalPrice,
+        sold: false
+      });
+    }
+    setShopEquipment(items);
+  };
+
+  const buyEquipmentItem = (index: number) => {
+    const shopItem = shopEquipment[index];
+    if (!shopItem || shopItem.sold) return;
+
+    if (gameRef.current.player.gold >= shopItem.price) {
+      // Deduct gold
+      gameRef.current.player.gold -= shopItem.price;
+      setCurrentGold(gameRef.current.player.gold);
+
+      // Add to inventory
+      setInventory(prev => [...prev, shopItem.item]);
+
+      // Set item sold
+      setShopEquipment(prev => prev.map((item, idx) => {
+        if (idx === index) {
+          return { ...item, sold: true };
+        }
+        return item;
+      }));
+
+      addLog(`🛒 【購入】「${shopItem.item.name}」を ${shopItem.price} G で購入しました！バッグに送られます。`);
+      gameAudio.playCollect();
+    } else {
+      addLog(`❌ 【ゴールド不足】「${shopItem.item.name}」の購入には ${shopItem.price} G 必要ですが、現在 ${gameRef.current.player.gold} G しかありません。`);
+    }
+  };
+
+  const buyMagmaPotion = () => {
+    const magmaPotionPrice = 1000;
+    if (gameRef.current.player.gold >= magmaPotionPrice) {
+      // Deduct gold
+      gameRef.current.player.gold -= magmaPotionPrice;
+      setCurrentGold(gameRef.current.player.gold);
+
+      // Create Magma Potion Item
+      const magmaPotion: Item = {
+        id: `magma-potion-bought-${Math.random().toString(36).substr(2, 5)}`,
+        name: '🔥マグマポーション',
+        type: 'potion',
+        statValue: 0,
+        rarity: 'epic',
+        area: 3,
+        description: '飲むことで周囲を烈火に包むブーストモードになり、60秒間攻撃力が＋10アップする。さらに極光結晶ゴーレムの結晶シールドを破壊できるようになる！',
+        color: '#f97316',
+      };
+
+      // Add to inventory
+      setInventory(prev => [...prev, magmaPotion]);
+
+      addLog(`🛒 【購入】「🔥マグマポーション」を 1000 G で購入しました！バッグに送られます。`);
+      gameAudio.playCollect();
+    } else {
+      addLog(`❌ 【ゴールド不足】「🔥マグマポーション」の購入には 1000 G 必要ですが、現在 ${gameRef.current.player.gold} G しかありません。`);
+    }
   };
 
   // Initialize the lock gating and key-carrier spawning properties for the given area
@@ -435,6 +620,11 @@ export default function App() {
     (gameRef.current as any).villagerHintReceived = false;
     setFrozenRocks([]);
     setVillagerHintReceived(false);
+
+    (gameRef.current as any).gimmickEyes = [];
+    (gameRef.current as any).gimmickSolved = false;
+    setGimmickEyes([]);
+    setGimmickSolved(false);
 
     if (areaId === 2 || areaId === 3 || areaId === 4) {
       // エリア2, 3, 4: 門を開けるのに鍵が必要。初期状態は未所持、未開。
@@ -502,6 +692,34 @@ export default function App() {
       setGateOpened(true);
       gameRef.current.hasAreaKey = true;
       gameRef.current.gateOpened = true;
+
+      if (areaId === 5) {
+        const eyes: GimmickEye[] = [];
+        const centerX = 400;
+        const centerY = 240;
+        const radius = 140;
+
+        for (let h = 1; h <= 12; h++) {
+          const theta = -Math.PI / 2 + h * (Math.PI / 6);
+          const x = centerX + radius * Math.cos(theta);
+          const y = centerY + radius * Math.sin(theta);
+          const isInitiallyActivated = (h === 12 || h === 3 || h === 6 || h === 9);
+
+          eyes.push({
+            id: `gimmick-eye-${h}`,
+            hour: h,
+            x,
+            y,
+            r: 20,
+            isActivated: isInitiallyActivated,
+          });
+        }
+
+        (gameRef.current as any).gimmickEyes = eyes;
+        (gameRef.current as any).gimmickSolved = false;
+        setGimmickEyes(eyes);
+        setGimmickSolved(false);
+      }
     }
     gameRef.current.gateAlertTimer = 0;
   };
@@ -614,6 +832,24 @@ export default function App() {
       });
       gameAudio.playCollect();
     }
+  };
+
+  // エリア5 混沌の時計盤：古びた魔導書のヒント対話
+  const handleReadGimmickBook = () => {
+    if (activeDialogue) {
+      setActiveDialogue(null);
+      (gameRef.current as any).activeDialogue = null;
+      (gameRef.current as any).hasActiveDialogue = false;
+      return;
+    }
+
+    setActiveDialogue({
+      speaker: '📖 古びた書物',
+      text: '「混沌を見つめる眼、時を迎える。３時と５時と９時の方角を示せ。さすれば深淵ボスの部屋を封じる大いなる門の鍵、ここに顕現せん。」',
+    });
+    (gameRef.current as any).activeDialogue = true;
+    (gameRef.current as any).hasActiveDialogue = true;
+    gameAudio.playCollect();
   };
 
   // エリア4凍える村人との会話ハンドラー
@@ -788,7 +1024,13 @@ export default function App() {
 
   // Inventory equipping handler
   const handleEquipItem = (item: Item) => {
-    if (item.id === equippedHat.id || item.id === equippedArmor.id || item.id === equippedPants.id || item.id === equippedSword.id) {
+    if (
+      item.id === equippedHat.id || 
+      item.id === equippedArmor.id || 
+      item.id === equippedPants.id || 
+      item.id === equippedSword.id ||
+      (equippedShield && item.id === equippedShield.id)
+    ) {
       addLog(`「${item.name}」は既に装備されています。`);
       return;
     }
@@ -802,6 +1044,8 @@ export default function App() {
       setEquippedPants(item);
     } else if (item.type === 'sword') {
       setEquippedSword(item);
+    } else if (item.type === 'shield') {
+      setEquippedShield(item);
     }
     addLog(`🛡 装備しました: ${item.name} (${item.type === 'sword' ? '攻撃力' : '防御力'} +${item.statValue})`);
   };
@@ -812,7 +1056,8 @@ export default function App() {
       itemToDelete.id === equippedHat.id || 
       itemToDelete.id === equippedArmor.id || 
       itemToDelete.id === equippedPants.id || 
-      itemToDelete.id === equippedSword.id
+      itemToDelete.id === equippedSword.id ||
+      (equippedShield && itemToDelete.id === equippedShield.id)
     ) {
       addLog(`❌ 装備中のアイテム「${itemToDelete.name}」は売却できません。`);
       return;
@@ -1001,9 +1246,16 @@ export default function App() {
         }
       }
 
+      if (areaId === 5 && screenX === 1 && screenY === 1) {
+        addLog(`🔮 【混沌の時計盤】 12個の「混沌を見つめる眼球」と中央に「リセット祭壇」を発見した！`);
+        addLog(`💡 目のギミック：目を攻撃すると、その目と時計盤の両隣の目の開閉状態が反転します！`);
+        addLog(`💡 中央のリセット祭壇を攻撃すると、初期状態（12, 3, 6, 9時が開眼）に戻ります。`);
+        addLog(`🔓 すべての目（1〜12時）を同時に「開眼（点灯）」状態にするのがクリア条件です！`);
+      }
+
       // Normal map screens: Spawn 2 to 4 mobs depending on Area difficulty
-      // ※エリア４の村人画面(0,1)は安全な聖域とするためモンスターは湧かない
-      const mobCount = (areaId === 4 && screenX === 0 && screenY === 1) ? 0 : (2 + (areaId > 2 ? 2 : 1));
+      // ※エリア４の村人画面(0,1)およびエリア5の眼球時計盤画面(1,1)は安全な聖域とするためモンスターは湧かない
+      const mobCount = (areaId === 4 && screenX === 0 && screenY === 1) || (areaId === 5 && screenX === 1 && screenY === 1) ? 0 : (2 + (areaId > 2 ? 2 : 1));
       
       const mobNames = {
         1: ['グリーンスライム', '草原の牙蜘蛛'],
@@ -1120,6 +1372,7 @@ export default function App() {
     setEquippedArmor(defaultArmor);
     setEquippedPants(defaultPants);
     setEquippedSword(defaultSword);
+    setEquippedShield(null);
 
     setInventory([defaultHat, defaultArmor, defaultPants, defaultSword]);
     
@@ -1139,6 +1392,10 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
       const isEKey = key === 'e' || e.code === 'KeyE' || e.key === 'E' || key === 'ｅ';
+
+      if (isBagOpen || gameRef.current.isBagOpen || isShopOpen || gameRef.current.isShopOpen) {
+        return;
+      }
 
       // Dialogue active interruption
       if ((gameRef.current as any).hasActiveDialogue) {
@@ -1166,6 +1423,11 @@ export default function App() {
         triggerPlayerAttack();
       }
 
+      // Shield block with 'b'
+      if (key === 'b' || key === 'ｂ') {
+        triggerShieldBlock();
+      }
+
       // Portal level entry or Lizard King interaction with 'e' or Enter
       if (isEKey || e.key === 'Enter') {
         const p = gameRef.current.player;
@@ -1174,6 +1436,13 @@ export default function App() {
           handleTalkToLizardKing();
         } else if (currentAreaId === 4 && p.screenX === 0 && p.screenY === 1) {
           handleTalkToVillager();
+        } else if (currentAreaId === 5 && p.screenX === 1 && p.screenY === 1) {
+          const distToBook = Math.sqrt((p.x + p.width / 2 - 400) ** 2 + (p.y + p.height / 2 - 240) ** 2);
+          if (distToBook < 85) {
+            handleReadGimmickBook();
+          } else {
+            triggerPortalTransition();
+          }
         } else {
           triggerPortalTransition();
         }
@@ -1264,7 +1533,8 @@ export default function App() {
 
   // Attack Trigger
   const triggerPlayerAttack = () => {
-    if (isBagOpen || gameRef.current.isBagOpen) return;
+    if (isBagOpen || gameRef.current.isBagOpen || isShopOpen || gameRef.current.isShopOpen) return;
+    if (activeDialogue !== null || (gameRef.current as any).hasActiveDialogue) return;
     const player = gameRef.current.player;
     if (player.attackCooldown > 0 || player.hp <= 0) return;
     if ((player as any).freezeDuration > 0) return;
@@ -1396,6 +1666,191 @@ export default function App() {
         }
       }
     });
+
+    // Area 5 Gimmick Eyes physical check
+    const currentAreaId = gameRef.current.area;
+    if (currentAreaId === 5 && player.screenX === 1 && player.screenY === 1) {
+      const eyes: GimmickEye[] = (gameRef.current as any).gimmickEyes || [];
+      const solved = (gameRef.current as any).gimmickSolved || false;
+      
+      if (!solved) {
+        // Find if we hit an eyeball switch or the central book of hints
+        let nearestEye: GimmickEye | null = null;
+        let nearestDist = Infinity;
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
+
+        eyes.forEach((eye) => {
+          const dist = Math.sqrt((eye.x - px) ** 2 + (eye.y - py) ** 2);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestEye = eye;
+          }
+        });
+
+        const pedestalDist = Math.sqrt((400 - px) ** 2 + (240 - py) ** 2);
+
+        // Prioritize whichever is physically closer to prevent multiple activations from a single hit
+        if (pedestalDist < nearestDist && pedestalDist <= 65) {
+          let isFacingOffset = false;
+          if (player.dir === 'right' && 400 > px - 5) isFacingOffset = true;
+          else if (player.dir === 'left' && 400 < px + 5) isFacingOffset = true;
+          else if (player.dir === 'down' && 240 > py - 5) isFacingOffset = true;
+          else if (player.dir === 'up' && 240 < py + 5) isFacingOffset = true;
+
+          if (isFacingOffset) {
+            handleReadGimmickBook();
+            
+            for (let cp = 0; cp < 14; cp++) {
+              gameRef.current.particles.push({
+                id: `book-spark-${Math.random()}`,
+                x: 400,
+                y: 240,
+                dx: (Math.random() - 0.5) * 5,
+                dy: (Math.random() - 0.5) * 5,
+                color: '#ec4899',
+                size: 2 + Math.random() * 3,
+                life: 25,
+                maxLife: 25,
+              });
+            }
+          }
+        }
+        // 2. Check eyeball hit (only closest eyeball responds)
+        else if (nearestEye && nearestDist <= 72) {
+          const eye: GimmickEye = nearestEye;
+          let isInDirection = false;
+          if (player.dir === 'right' && eye.x > px - 5) isInDirection = true;
+          else if (player.dir === 'left' && eye.x < px + 5) isInDirection = true;
+          else if (player.dir === 'down' && eye.y > py - 5) isInDirection = true;
+          else if (player.dir === 'up' && eye.y < py + 5) isInDirection = true;
+
+          if (isInDirection) {
+            gameAudio.playCollect();
+            const hour = eye.hour;
+
+            eyes.forEach((e) => {
+              if (e.hour === hour) {
+                e.isActivated = !e.isActivated;
+                
+                for (let cp = 0; cp < 8; cp++) {
+                  gameRef.current.particles.push({
+                    id: `eye-spark-${Math.random()}`,
+                    x: e.x,
+                    y: e.y,
+                    dx: (Math.random() - 0.5) * 3,
+                    dy: (Math.random() - 0.5) * 3,
+                    color: e.isActivated ? '#c084fc' : '#475569',
+                    size: 2 + Math.random() * 3,
+                    life: 20,
+                    maxLife: 20,
+                  });
+                }
+              }
+            });
+
+            setGimmickEyes([...eyes]);
+            addLog(`🔮 【混沌の時計盤】 ${hour}時の目を攻撃した！`);
+
+            // Solve Condition: Only hours 3, 5, and 9 are activated, and all others are deactivated
+            const allSolved = eyes.every((e) => {
+              if (e.hour === 3 || e.hour === 5 || e.hour === 9) {
+                return e.isActivated;
+              } else {
+                return !e.isActivated;
+              }
+            });
+
+            if (allSolved) {
+              (gameRef.current as any).gimmickSolved = true;
+              setGimmickSolved(true);
+
+              // Grant Boss Gate/Area Key immediately!
+              gameRef.current.hasAreaKey = true;
+              setHasAreaKey(true);
+
+              addLog(`🔓 【時空眼ギミック解除成功】 ３時・５時・９時の方角の深淵眼のみが開眼した！`);
+              addLog(`🔑 【深淵ボスの鍵】を獲得！ エリアボスの部屋 (2, 2) の門を開くことができます。`);
+              addLog(`🎁 時計盤の中央に、幻の究極盾 「👁️ 混沌神の魔眼・エクリプス」 が出現！ 触れて回収しよう！`);
+
+              if (gameAudio.playPortal) {
+                gameAudio.playPortal();
+              }
+
+              // Spawn the special drop item right at the center!
+              const secretEyeItem: Item = {
+                id: `gimmick-prize-${Math.random().toString(36).substr(2, 5)}`,
+                name: '👁️ 混沌神の魔眼・エクリプス',
+                type: 'shield',
+                statValue: 65, // Enormously high defense bonus!
+                rarity: 'legendary',
+                area: 5,
+                description: '12個の深淵眼の謎を解いた者へ贈られる究極の盾。全宇宙を観察する魔神の瞳が宿り、全ての攻撃を飲み込む。防御力 +65',
+                color: '#c084fc',
+              };
+
+              gameRef.current.dropItems.push({
+                id: `drop-prize-${Math.random().toString(36).substr(2, 4)}`,
+                item: secretEyeItem,
+                x: 400,
+                y: 240,
+                screenX: 1,
+                screenY: 1,
+                bounceY: 0,
+              });
+
+              // Spawn key drop for physical pickup feeling
+              const areaKeyItem: Item = {
+                id: `gimmick-key-${Math.random().toString(36).substr(2, 5)}`,
+                name: '🔑 深淵ボスの鍵',
+                type: 'hat',
+                statValue: 0,
+                rarity: 'legendary',
+                area: 5,
+                description: 'エリアボスの部屋 (2, 2) の大門を開門するための、時空の隙間から顕現した混沌の鍵。',
+                color: '#fbbf24',
+              };
+
+              gameRef.current.dropItems.push({
+                id: `drop-key-${Math.random().toString(36).substr(2, 4)}`,
+                item: areaKeyItem,
+                x: 400,
+                y: 210, // slightly offset
+                screenX: 1,
+                screenY: 1,
+                bounceY: 0,
+              });
+
+              // Extra item from Area 5 boss loot table
+              const extraLegendary = generateItem(5, true);
+              gameRef.current.dropItems.push({
+                id: `drop-extra-${Math.random().toString(36).substr(2, 4)}`,
+                item: extraLegendary,
+                x: 370,
+                y: 240,
+                screenX: 1,
+                screenY: 1,
+                bounceY: 0,
+              });
+
+              for (let cp = 0; cp < 45; cp++) {
+                gameRef.current.particles.push({
+                  id: `gimmick-win-${Math.random()}`,
+                  x: 400,
+                  y: 240,
+                  dx: (Math.random() - 0.5) * 11,
+                  dy: (Math.random() - 0.5) * 11,
+                  color: ['#a855f7', '#ec4899', '#3b82f6', '#fbbf24'][Math.floor(Math.random() * 4)],
+                  size: 3 + Math.random() * 5,
+                  life: 50,
+                  maxLife: 50,
+                });
+              }
+            }
+          }
+        }
+      }
+    }
 
     // Damage enemies calculation
     // Arc logic: Check enemies close enough and in facing direction
@@ -1551,6 +2006,60 @@ export default function App() {
         }
       }
     });
+  };
+
+  // Shield Block Trigger
+  const triggerShieldBlock = () => {
+    if (isBagOpen || gameRef.current.isBagOpen || isShopOpen || gameRef.current.isShopOpen) return;
+    if (activeDialogue !== null || (gameRef.current as any).hasActiveDialogue) return;
+    const player = gameRef.current.player;
+    if (player.hp <= 0) return;
+    if (player.freezeDuration && player.freezeDuration > 0) return;
+
+    // 盾の解放エリア制限 (Use dynamic gameRef area to bypass stale closures)
+    const dynamicArea = gameRef.current ? gameRef.current.area : currentArea;
+    if (dynamicArea < 5) {
+      addLog(`❌ 🛡️ 盾ガードはエリア５「深淵の世界」に到達してから使用可能になります！`);
+      return;
+    }
+
+    // 盾を装備しているか確認 (Use dynamic gameRef equippedShield to bypass stale closures)
+    const dynamicShield = gameRef.current ? (gameRef.current as any).equippedShield : equippedShield;
+    if (!dynamicShield) {
+      addLog(`❌ 🛡️ 盾を装備していません！バッグ[🎒]から盾を選択して装着してください。`);
+      return;
+    }
+
+    if (player.shieldCooldown && player.shieldCooldown > 0) {
+      addLog(`⏳ 🛡️ 盾はクールダウン中です！（残り ${Math.ceil(player.shieldCooldown / 60)} 秒）`);
+      return;
+    }
+
+    // 盾ガード有効フレーム：30フレーム（0.5秒）、クールダウン：90フレーム（1.5秒）
+    player.shieldActiveTimer = 30;
+    player.shieldCooldown = 90;
+
+    addLog(`🛡️ 【不破の神盾受け発動！】0.5秒間、敵のあらゆる攻撃を完全に無効化し、攻撃者に一撃カウンター（ボス除く）を跳ね返します！`);
+
+    // 音声エフェクト
+    gameAudio.playPortal();
+
+    // プレイヤーの周囲に輝くシールドバリアのエフェクト粒子を放出
+    for (let i = 0; i < 22; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const d = 10 + Math.random() * 22;
+      gameRef.current.particles.push({
+        id: `shield-burst-${Math.random()}`,
+        x: player.x + player.width / 2 + Math.cos(angle) * d,
+        y: player.y + player.height / 2 + Math.sin(angle) * d,
+        dx: (Math.random() - 0.5) * 2 - Math.cos(angle) * 0.8,
+        dy: (Math.random() - 0.5) * 2 - Math.sin(angle) * 0.8,
+        color: '#38bdf8',
+        size: 1.8 + Math.random() * 2.5,
+        life: 22,
+        maxLife: 22,
+      });
+    }
   };
 
   // Enemy Defeat Trigger
@@ -1904,7 +2413,7 @@ export default function App() {
 
   // Portal entering
   const triggerPortalTransition = () => {
-    if (isBagOpen || gameRef.current.isBagOpen) return;
+    if (isBagOpen || gameRef.current.isBagOpen || isShopOpen || gameRef.current.isShopOpen) return;
     const portal = gameRef.current.portal;
     const player = gameRef.current.player;
 
@@ -1991,7 +2500,7 @@ export default function App() {
       const area = gameRef.current.area;
       const activeArea = AREAS[area];
 
-      if (isGameOver || hasWonFinal || isBagOpen || gameRef.current.isBagOpen || activeDialogue !== null || (gameRef.current as any).hasActiveDialogue) return;
+      if (isGameOver || hasWonFinal || isBagOpen || gameRef.current.isBagOpen || isShopOpen || gameRef.current.isShopOpen || activeDialogue !== null || (gameRef.current as any).hasActiveDialogue) return;
 
       // 毒デバフ処理 (毎秒5ダメージ、5秒間継続=300フレーム)
       if ((player as any).poisonDuration === undefined) (player as any).poisonDuration = 0;
@@ -2151,6 +2660,7 @@ export default function App() {
           setEquippedArmor(defaultArmor);
           setEquippedPants(defaultPants);
           setEquippedSword(defaultSword);
+          setEquippedShield(null);
 
           // 装備していた最強アイテム（奪われたもの）を完全喪失させ、初期装備に直す
           // 初期装備をインベントリ内に戻す
@@ -2215,6 +2725,30 @@ export default function App() {
         if (player.attackAnimFrame === 0) {
           player.isAttacking = false;
         }
+      }
+
+      // Shield active and cooldown timers ticking
+      if (player.shieldActiveTimer && player.shieldActiveTimer > 0) {
+        player.shieldActiveTimer--;
+        
+        // Spawn active shield ripple particles
+        if (Math.random() < 0.3) {
+          const pAngle = Math.random() * Math.PI * 2;
+          gameRef.current.particles.push({
+            id: `shield-active-glow-${Math.random()}`,
+            x: player.x + player.width / 2 + Math.cos(pAngle) * 20,
+            y: player.y + player.height / 2 + Math.sin(pAngle) * 20,
+            dx: (Math.random() - 0.5) * 0.4,
+            dy: (Math.random() - 0.5) * 0.4,
+            color: '#38bdf8',
+            size: 1.5,
+            life: 15,
+            maxLife: 15,
+          });
+        }
+      }
+      if (player.shieldCooldown && player.shieldCooldown > 0) {
+        player.shieldCooldown--;
       }
 
       // Screen shaking decay
@@ -2822,50 +3356,122 @@ export default function App() {
               // Active melee hitbox check (range: player.width/2 + enemy.width/2 + 15 offset)
               const hitRadius = (player.width / 2) + (enemy.width / 2) + 15;
               if (strikeDistance < hitRadius && !gameRef.current.testPlayMode) {
-                const now = Date.now();
-                if (now - player.lastHurtTime > 600) {
-                  player.lastHurtTime = now;
+                // 盾ガードの受付判定
+                if (player.shieldActiveTimer && player.shieldActiveTimer > 0) {
+                  // ガード成功！
+                  addLog(`🛡️ 【ガード成功！】「${enemy.name}」の強烈な直接打撃を不破の神盾が無効化し、跳ね返した！`);
                   
-                  // Def calculations: Base DEF subtracts flatly, rounded average of (Hat + Armor + Pants) reduces as % rate.
-                  const baseDef = gameRef.current.player.baseDef;
-                  const rawBaseDamage = Math.max(1, enemy.atk - baseDef);
-                  const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
-                  const avgReductionPercent = Math.round(defenseBonus / 3);
-                  const finalDmg = Math.max(1, Math.round(rawBaseDamage * (1 - avgReductionPercent / 100)));
-                  player.hp -= finalDmg;
-
-                  // Update state
-                  setPlayerHP(player.hp);
-                  gameRef.current.screenShake = 12;
-                  gameAudio.playPlayerHurt();
-
-                  // Spawn dramatic blood splatters
-                  for (let b = 0; b < 10; b++) {
+                  // 青く輝くパリィ/ガードエフェクト粒子
+                  for (let bp = 0; bp < 25; bp++) {
+                    const fAngle = Math.random() * Math.PI * 2;
+                    const fSpd = 2 + Math.random() * 4;
                     gameRef.current.particles.push({
-                      id: `blood-${Math.random()}`,
+                      id: `parry-${Math.random()}`,
                       x: player.x + player.width / 2,
                       y: player.y + player.height / 2,
-                      dx: (Math.random() - 0.5) * 5,
-                      dy: (Math.random() - 0.5) * 5,
-                      color: '#ef4444',
-                      size: 2 + Math.random() * 4,
-                      life: 18,
-                      maxLife: 18,
+                      dx: Math.cos(fAngle) * fSpd,
+                      dy: Math.sin(fAngle) * fSpd,
+                      color: '#06b6d4',
+                      size: 2.5 + Math.random() * 3,
+                      life: 25,
+                      maxLife: 25,
                     });
                   }
 
-                  // Damage Text
+                  // Floating Text "🛡️ REFLECT!"
                   gameRef.current.floatingTexts.push({
-                    id: `hurt-${Math.random()}`,
-                    text: `-${finalDmg}`,
+                    id: `deflect-txt-${Math.random()}`,
+                    text: `🛡️ DEFLECT!`,
                     x: player.x,
-                    y: player.y - 12,
-                    color: '#f87171',
+                    y: player.y - 20,
+                    color: '#38bdf8',
                     alpha: 1,
-                    life: 40
+                    life: 40,
                   });
 
-                  addLog(`💔 「${enemy.name}」の素早い直接打撃！ ${finalDmg} のダメージを受けた。 (防具ダメージ軽減: ${avgReductionPercent}%)`);
+                  // 反射処理
+                  const isBoss = enemy.type === 'boss';
+                  if (!isBoss) {
+                    enemy.hp = 0; // 一撃瞬殺
+                    gameRef.current.floatingTexts.push({
+                      id: `oneshot-txt-${Math.random()}`,
+                      text: `💥 一撃瞬殺!`,
+                      x: enemy.x,
+                      y: enemy.y - 12,
+                      color: '#f43f5e',
+                      alpha: 1,
+                      life: 45,
+                    });
+                    addLog(`💥 【一撃必殺！】 盾から反射した神気により、敵「${enemy.name}」を一撃で打ち倒した！`);
+                    handleEnemyDefeat(enemy);
+                  } else {
+                    // ボスの場合は最大体力の15%の割合ダメージを与える
+                    const reflectDamage = Math.max(50, Math.round(enemy.maxHp * 0.15));
+                    enemy.hp -= reflectDamage;
+                    gameRef.current.floatingTexts.push({
+                      id: `bossreflect-txt-${Math.random()}`,
+                      text: `🛡️ カウンター -${reflectDamage}`,
+                      x: enemy.x,
+                      y: enemy.y - 12,
+                      color: '#f43f5e',
+                      alpha: 1,
+                      life: 40
+                    });
+                    addLog(`🛡️ 【カウンター！】 ボス「${enemy.name}」に盾の反射衝撃で ${reflectDamage} ダメージを与えました！`);
+                    if (enemy.hp <= 0) {
+                      handleEnemyDefeat(enemy);
+                    }
+                  }
+
+                  // 成功時の衝撃波、効果音
+                  gameRef.current.screenShake = 6;
+                  gameAudio.playPortal();
+                } else {
+                  const now = Date.now();
+                  if (now - player.lastHurtTime > 600) {
+                    player.lastHurtTime = now;
+                    
+                    // Def calculations: Base DEF subtracts flatly, rounded average of (Hat + Armor + Pants) reduces as % rate.
+                    const baseDef = gameRef.current.player.baseDef;
+                    const rawBaseDamage = Math.max(1, enemy.atk - baseDef);
+                    const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue + (equippedShield ? equippedShield.statValue : 0);
+                    const avgReductionPercent = Math.round(defenseBonus / (equippedShield ? 4 : 3));
+                    const finalDmg = Math.max(1, Math.round(rawBaseDamage * (1 - avgReductionPercent / 100)));
+                    player.hp -= finalDmg;
+
+                    // Update state
+                    setPlayerHP(player.hp);
+                    gameRef.current.screenShake = 12;
+                    gameAudio.playPlayerHurt();
+
+                    // Spawn dramatic blood splatters
+                    for (let b = 0; b < 10; b++) {
+                      gameRef.current.particles.push({
+                        id: `blood-${Math.random()}`,
+                        x: player.x + player.width / 2,
+                        y: player.y + player.height / 2,
+                        dx: (Math.random() - 0.5) * 5,
+                        dy: (Math.random() - 0.5) * 5,
+                        color: '#ef4444',
+                        size: 2 + Math.random() * 4,
+                        life: 18,
+                        maxLife: 18,
+                      });
+                    }
+
+                    // Damage Text
+                    gameRef.current.floatingTexts.push({
+                      id: `hurt-${Math.random()}`,
+                      text: `-${finalDmg}`,
+                      x: player.x,
+                      y: player.y - 12,
+                      color: '#f87171',
+                      alpha: 1,
+                      life: 40
+                    });
+
+                    addLog(`💔 「${enemy.name}」の素早い直接打撃！ ${finalDmg} のダメージを受けた。 (防具ダメージ軽減: ${avgReductionPercent}%)`);
+                  }
                 }
               }
 
@@ -2951,14 +3557,104 @@ export default function App() {
             return; // Ignore damage and slow effects in test play mode, but clear the projectile
           }
 
+          // 盾ガードのアクティブ判定
+          if (player.shieldActiveTimer && player.shieldActiveTimer > 0) {
+            // ガード成功！弾を消滅させ、跳ね返す
+            addLog(`🛡️ 【ガード成功！】 飛来する邪悪な魔弾を不破の神盾が無効化し、跳ね返した！`);
+
+            // 弾パリィの煌びやかなクリスタルバースト粒子
+            for (let bp = 0; bp < 15; bp++) {
+              const fAngle = Math.random() * Math.PI * 2;
+              const fSpd = 1.5 + Math.random() * 3.5;
+              gameRef.current.particles.push({
+                id: `parry-proj-${Math.random()}`,
+                x: p.x,
+                y: p.y,
+                dx: Math.cos(fAngle) * fSpd,
+                dy: Math.sin(fAngle) * fSpd,
+                color: '#38bdf8',
+                size: 2 + Math.random() * 2,
+                life: 20,
+                maxLife: 20,
+              });
+            }
+
+            // Floating Text "🛡️ PARRIED!"
+            gameRef.current.floatingTexts.push({
+              id: `deflect-txt-${Math.random()}`,
+              text: `🛡️ PARRIED!`,
+              x: player.x,
+              y: player.y - 20,
+              color: '#38bdf8',
+              alpha: 1,
+              life: 40,
+            });
+
+            // 反射処理のターゲット選定
+            let targetEnemy = gameRef.current.enemies.find(e => e.id === p.shooterId && e.hp > 0);
+            
+            if (!targetEnemy) {
+              let minDist = Infinity;
+              gameRef.current.enemies.forEach(e => {
+                if (e.hp > 0 && e.screenX === player.screenX && e.screenY === player.screenY && e.type !== 'villager_npc' && e.type !== ('lizard_king_npc' as any)) {
+                  const edx = e.x - player.x;
+                  const edy = e.y - player.y;
+                  const dist = Math.sqrt(edx * edx + edy * edy);
+                  if (dist < minDist) {
+                    minDist = dist;
+                    targetEnemy = e;
+                  }
+                }
+              });
+            }
+
+            if (targetEnemy) {
+              const isBoss = targetEnemy.type === 'boss';
+              if (!isBoss) {
+                targetEnemy.hp = 0; // 即死
+                gameRef.current.floatingTexts.push({
+                  id: `oneshot-txt-${Math.random()}`,
+                  text: `💥 跳ね返し即死!`,
+                  x: targetEnemy.x,
+                  y: targetEnemy.y - 12,
+                  color: '#f43f5e',
+                  alpha: 1,
+                  life: 45,
+                });
+                addLog(`💥 【跳ね返しカウンター！】 弾を跳ね返し、敵「${targetEnemy.name}」を一撃で撃滅した！`);
+                handleEnemyDefeat(targetEnemy);
+              } else {
+                // ボスには割合ダメージ
+                const reflectDamage = Math.max(50, Math.round(targetEnemy.maxHp * 0.15));
+                targetEnemy.hp -= reflectDamage;
+                gameRef.current.floatingTexts.push({
+                  id: `bossreflect-txt-${Math.random()}`,
+                  text: `💥 弾跳ね返し -${reflectDamage}`,
+                  x: targetEnemy.x,
+                  y: targetEnemy.y - 12,
+                  color: '#f43f5e',
+                  alpha: 1,
+                  life: 40
+                });
+                addLog(`🛡️ 【ボス跳ね返し！】 飛来した弾幕を跳ね返し、エリアボス「${targetEnemy.name}」に ${reflectDamage} ダメージを与えた！`);
+                if (targetEnemy.hp <= 0) {
+                  handleEnemyDefeat(targetEnemy);
+                }
+              }
+            }
+
+            gameAudio.playPortal();
+            return; // デバフやダメージ全て無効化
+          }
+
           const now = Date.now();
           if (now - player.lastHurtTime > 600) {
             player.lastHurtTime = now;
             
             const baseDef = gameRef.current.player.baseDef;
             const rawBaseDamage = Math.max(1, p.damage - baseDef);
-            const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue;
-            const avgReductionPercent = Math.round(defenseBonus / 3);
+            const defenseBonus = equippedHat.statValue + equippedArmor.statValue + equippedPants.statValue + (equippedShield ? equippedShield.statValue : 0);
+            const avgReductionPercent = Math.round(defenseBonus / (equippedShield ? 4 : 3));
             const finalDmg = Math.max(1, Math.round(rawBaseDamage * (1 - avgReductionPercent / 100)));
             player.hp -= finalDmg;
             setPlayerHP(player.hp);
@@ -3456,7 +4152,167 @@ export default function App() {
         ctx.fill();
 
         // 2. Draw styled items depending on type and theme
-        if (obs.type === 'tree') {
+        const gimmickEyeMatch = obs.type.match(/^gimmick_eye_(\d+)$/);
+        if (gimmickEyeMatch) {
+          const h = parseInt(gimmickEyeMatch[1], 10);
+          const eyes: GimmickEye[] = (gameRef.current as any).gimmickEyes || [];
+          const eyeState = eyes.find(e => e.hour === h);
+          const isActivated = eyeState ? eyeState.isActivated : false;
+          
+          // Draw the eyeball switch obstacle
+          ctx.fillStyle = '#1e1b4b'; // Deep indigo holder
+          ctx.beginPath();
+          ctx.arc(obs.x, obs.y, obs.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#581c87';
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+
+          // Draw eyeball iris
+          ctx.fillStyle = isActivated ? '#ffffff' : '#3c3a4d';
+          ctx.beginPath();
+          ctx.ellipse(obs.x, obs.y, obs.r * 0.75, obs.r * 0.45, 0, 0, Math.PI * 2);
+          ctx.fill();
+          
+          if (isActivated) {
+            // Draw a vibrant glowing violet iris and dark pupil
+            ctx.fillStyle = '#a855f7';
+            ctx.beginPath();
+            
+            // Staring direction: track player dynamically
+            const dx = player.x + 14 - obs.x;
+            const dy = player.y + 19 - obs.y;
+            const dDist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+            const pupilOffsetMultiplier = 3.5;
+            const pupilX = (dx / dDist) * pupilOffsetMultiplier;
+            const pupilY = (dy / dDist) * pupilOffsetMultiplier;
+
+            ctx.arc(obs.x + pupilX, obs.y + pupilY, obs.r * 0.28, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.arc(obs.x + pupilX, obs.y + pupilY, obs.r * 0.14, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Shine point
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(obs.x + pupilX - obs.r * 0.08, obs.y + pupilY - obs.r * 0.08, obs.r * 0.06, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            // Closed/Sleeping eye line
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(obs.x - obs.r * 0.6, obs.y);
+            ctx.lineTo(obs.x + obs.r * 0.6, obs.y);
+            ctx.stroke();
+            
+            // Lashes
+            ctx.lineWidth = 1.5;
+            for (let lash = -1; lash <= 1; lash++) {
+              const lx = obs.x + lash * (obs.r * 0.35);
+              ctx.beginPath();
+              ctx.moveTo(lx, obs.y);
+              ctx.lineTo(lx, obs.y + 6);
+              ctx.stroke();
+            }
+          }
+          
+          // Hour label
+          ctx.fillStyle = isActivated ? '#c084fc' : '#6b7280';
+          ctx.font = 'bold 11px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`${h}`, obs.x, obs.y - obs.r - 12);
+        }
+        else if (obs.type === 'gimmick_book') {
+          const isSolved = (gameRef.current as any).gimmickSolved || false;
+          
+          // 1. Draw Pedestal Pillar Support Base
+          ctx.fillStyle = '#1e1b4b'; // Deep dark violet stone base
+          ctx.beginPath();
+          ctx.ellipse(obs.x, obs.y + 12, 28, 12, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#4c1d95';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          ctx.fillStyle = '#2e1065'; // Column body
+          ctx.fillRect(obs.x - 12, obs.y - 12, 24, 24);
+          ctx.strokeStyle = '#4c1d95';
+          ctx.strokeRect(obs.x - 12, obs.y - 12, 24, 24);
+
+          // 2. Beautiful Book (Magic Spellbook)
+          // Draw open cover background
+          ctx.fillStyle = '#831843'; // Velvet crimson leather book cover
+          ctx.beginPath();
+          ctx.roundRect(obs.x - 22, obs.y - 18, 44, 28, 4);
+          ctx.fill();
+          ctx.strokeStyle = '#e11d48';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Left vintage page
+          ctx.fillStyle = '#fef08a'; // Vintage yellow page
+          ctx.beginPath();
+          ctx.roundRect(obs.x - 19, obs.y - 15, 17, 22, 2);
+          ctx.fill();
+
+          // Right vintage page
+          ctx.fillStyle = '#fef08a';
+          ctx.beginPath();
+          ctx.roundRect(obs.x + 2, obs.y - 15, 17, 22, 2);
+          ctx.fill();
+
+          // Spine line
+          ctx.strokeStyle = '#b45309';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(obs.x, obs.y - 15);
+          ctx.lineTo(obs.x, obs.y + 7);
+          ctx.stroke();
+
+          // Scribbled mystic spell markings
+          ctx.strokeStyle = '#1e293b';
+          ctx.lineWidth = 1;
+          // Left page scribbles
+          ctx.beginPath();
+          ctx.moveTo(obs.x - 16, obs.y - 10); ctx.lineTo(obs.x - 5, obs.y - 10);
+          ctx.moveTo(obs.x - 16, obs.y - 6); ctx.lineTo(obs.x - 7, obs.y - 6);
+          ctx.moveTo(obs.x - 14, obs.y - 2); ctx.lineTo(obs.x - 4, obs.y - 2);
+          // Right page scribbles
+          ctx.moveTo(obs.x + 5, obs.y - 10); ctx.lineTo(obs.x + 15, obs.y - 10);
+          ctx.moveTo(obs.x + 4, obs.y - 6); ctx.lineTo(obs.x + 13, obs.y - 6);
+          ctx.moveTo(obs.x + 6, obs.y - 2); ctx.lineTo(obs.x + 15, obs.y - 2);
+          ctx.stroke();
+
+          // Draw bookmark ribbon dropping
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(obs.x, obs.y + 7);
+          ctx.lineTo(obs.x + 3, obs.y + 16);
+          ctx.stroke();
+
+          // Glowing Aura around the book
+          const pulse = Math.sin(Date.now() / 200) * 4;
+          ctx.shadowColor = isSolved ? '#c084fc' : '#ec4899';
+          ctx.shadowBlur = 10 + pulse;
+          ctx.strokeStyle = isSolved ? 'rgba(192, 132, 252, 0.6)' : 'rgba(235, 72, 120, 0.4)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(obs.x - 24, obs.y - 20, 48, 32);
+          ctx.shadowBlur = 0;
+
+          // Book Title indicator
+          ctx.fillStyle = '#f3e8ff';
+          ctx.font = 'bold 10px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillText('📖 古びた書物', obs.x, obs.y - 34);
+        }
+        else if (obs.type === 'tree') {
           if (theme === 'forest') {
             // Oak / Pine Tree: trunk and detailed leafy canopies
             // trunk
@@ -5857,6 +6713,76 @@ export default function App() {
 
       ctx.restore();
 
+      // Draw Shield if equipped
+      if (equippedShield) {
+        ctx.save();
+        let sx = 0, sy = 0, sAngle = 0;
+        const isGuarding = player.shieldActiveTimer && player.shieldActiveTimer > 0;
+        
+        if (isGuarding) {
+          // Guarding pose: push shield far forward in the direction the player is facing to protect them!
+          if (player.dir === 'right') { sx = 14; sy = 0; sAngle = 0; }
+          else if (player.dir === 'left') { sx = -14; sy = 0; sAngle = 0; }
+          else if (player.dir === 'up') { sx = 0; sy = -12; sAngle = 0; }
+          else { sx = 0; sy = 12; sAngle = 0; }
+        } else {
+          // Calm equipped stance: hold shield naturally on the opposite side of the sword
+          if (player.dir === 'right') { sx = -12; sy = 4; sAngle = -Math.PI / 10; }
+          else if (player.dir === 'left') { sx = 12; sy = 4; sAngle = Math.PI / 10; }
+          else if (player.dir === 'up') { sx = 12; sy = -4; sAngle = Math.PI / 6; }
+          else { sx = -12; sy = 4; sAngle = -Math.PI / 10; }
+        }
+
+        ctx.translate(sx, sy);
+        ctx.rotate(sAngle);
+
+        // Draw shield silhouette/crest
+        ctx.fillStyle = equippedShield.color || '#3b82f6';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = isGuarding ? 2.5 : 1.25;
+
+        const w = isGuarding ? 16 : 11;
+        const h = isGuarding ? 20 : 14;
+
+        if (isGuarding) {
+          // Extra glow during guard
+          ctx.shadowColor = '#38bdf8';
+          ctx.shadowBlur = 12;
+        }
+
+        ctx.beginPath();
+        // Shield outline with top flat edge and elegant curved bottom point
+        ctx.moveTo(-w/2, -h/2);
+        ctx.lineTo(w/2, -h/2);
+        ctx.lineTo(w/2, -h/10);
+        ctx.quadraticCurveTo(w/2, h/2, 0, h/2);
+        ctx.quadraticCurveTo(-w/2, h/2, -w/2, -h/10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Inner metallic lining
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-w/3, -h/3);
+        ctx.lineTo(0, -h/12);
+        ctx.lineTo(w/3, -h/3);
+        ctx.stroke();
+
+        // Center emblem (glowing diamond motif)
+        ctx.fillStyle = isGuarding ? '#60a5fa' : '#fbbf24';
+        ctx.beginPath();
+        ctx.moveTo(0, -h/4);
+        ctx.lineTo(w/4, 0);
+        ctx.lineTo(0, h/4);
+        ctx.lineTo(-w/4, 0);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+      }
+
       // Active attack crescent visual arc sweep
       if (player.isAttacking) {
         ctx.save();
@@ -5878,6 +6804,40 @@ export default function App() {
           ctx.arc(0, 0, 48, Math.PI * 0.2, Math.PI * 0.8);
         }
         ctx.stroke();
+        ctx.restore();
+      }
+
+      // Active shield parry bubble overlay
+      if (player.shieldActiveTimer && player.shieldActiveTimer > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#38bdf8'; // Sky blue border
+        ctx.lineWidth = 3;
+        ctx.shadowColor = '#60a5fa';
+        ctx.shadowBlur = 15;
+        
+        // Pulsate shield size based on remaining timer
+        const timerPulse = Math.sin(Date.now() / 50) * 2;
+        const shieldRadius = Math.max(player.width, player.height) * 0.75 + timerPulse;
+        
+        // Draw elegant glowing circle shield
+        ctx.beginPath();
+        ctx.arc(0, 0, shieldRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Draw inside glow transparent fill
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
+        ctx.fill();
+        
+        // Draw simple shield crest/arc lines inside
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, 0, shieldRadius - 4, -Math.PI / 4, Math.PI / 4);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, shieldRadius - 4, Math.PI * 0.75, Math.PI * 1.25);
+        ctx.stroke();
+
         ctx.restore();
       }
 
@@ -6230,11 +7190,11 @@ export default function App() {
       active = false;
       cancelAnimationFrame(animationId);
     };
-  }, [equippedHat, equippedArmor, equippedPants, equippedSword, isGameOver, hasWonFinal, isBagOpen]);
+  }, [equippedHat, equippedArmor, equippedPants, equippedSword, equippedShield, isGameOver, hasWonFinal, isBagOpen, isShopOpen]);
 
   // Handle D-Pad Click Events for Mobile/Mouse players
   const handleVirtualDirPress = (dir: 'up' | 'down' | 'left' | 'right') => {
-    if (isBagOpen || gameRef.current.isBagOpen) return;
+    if (isBagOpen || gameRef.current.isBagOpen || isShopOpen || gameRef.current.isShopOpen) return;
     const keys = gameRef.current.keys;
     // Clear other directions
     keys['w'] = false; keys['arrowup'] = false;
@@ -6275,6 +7235,8 @@ export default function App() {
     setEquippedArmor(defaultArmor);
     setEquippedPants(defaultPants);
     setEquippedSword(defaultSword);
+    setEquippedShield(null);
+    setHasReceivedArea5Shield(false);
     setInventory([defaultHat, defaultArmor, defaultPants, defaultSword]);
     setSelectedItem(null);
     setScreenCoordinates({ x: 0, y: 0 });
@@ -6310,6 +7272,8 @@ export default function App() {
     (gameRef.current.player as any).poisonTick = 0;
     (gameRef.current.player as any).burnDuration = 0;
     (gameRef.current.player as any).burnTick = 0;
+    gameRef.current.player.shieldActiveTimer = 0;
+    gameRef.current.player.shieldCooldown = 0;
     if ((gameRef.current.player as any).speedTimer) {
       clearTimeout((gameRef.current.player as any).speedTimer);
       (gameRef.current.player as any).speedTimer = null;
@@ -6324,6 +7288,10 @@ export default function App() {
 
     initAreaGimmick(1);
     spawnMobsForCurrentScreen(1, 0, 0);
+    setShopUnlocked(false);
+    setIsShopOpen(false);
+    gameRef.current.isShopOpen = false;
+    setShopEquipment([]);
     setGameLog(['ゲームが初期化されました！ 新生なる草原(0, 0)から再冒険スタート！']);
     gameAudio.playCollect();
   };
@@ -6770,7 +7738,8 @@ export default function App() {
                               item.id === equippedHat.id || 
                               item.id === equippedArmor.id || 
                               item.id === equippedPants.id || 
-                              item.id === equippedSword.id
+                              item.id === equippedSword.id ||
+                              (equippedShield && item.id === equippedShield.id)
                             );
 
                             const borderStyle = 
@@ -6806,7 +7775,7 @@ export default function App() {
                                       {item.name}
                                     </span>
                                     <span className="text-[9px] text-gray-500 font-mono">
-                                      {item.type === 'hat' ? '👒頭' : item.type === 'armor' ? '🥋胴' : item.type === 'pants' ? '👖脚' : '⚔️武'}: +{item.statValue}
+                                      {item.type === 'hat' ? '👒頭' : item.type === 'armor' ? '🥋胴' : item.type === 'pants' ? '👖脚' : item.type === 'sword' ? '⚔️武' : '🛡️盾'}: +{item.statValue}
                                     </span>
                                   </div>
                                 </div>
@@ -6988,7 +7957,8 @@ export default function App() {
                                   (selectedItem.id === equippedHat.id || 
                                    selectedItem.id === equippedArmor.id || 
                                    selectedItem.id === equippedPants.id || 
-                                   selectedItem.id === equippedSword.id)
+                                   selectedItem.id === equippedSword.id ||
+                                   (equippedShield && selectedItem.id === equippedShield.id))
                                      ? 'bg-purple-950/40 text-purple-400/60 border border-purple-900/40 cursor-not-allowed'
                                      : 'bg-purple-700 hover:bg-purple-600 text-white shadow shadow-purple-950'
                                 }`}
@@ -6996,13 +7966,15 @@ export default function App() {
                                   selectedItem.id === equippedHat.id || 
                                   selectedItem.id === equippedArmor.id || 
                                   selectedItem.id === equippedPants.id || 
-                                  selectedItem.id === equippedSword.id
+                                  selectedItem.id === equippedSword.id ||
+                                  (equippedShield && selectedItem.id === equippedShield.id)
                                 }
                               >
                                 {(selectedItem.id === equippedHat.id || 
                                   selectedItem.id === equippedArmor.id || 
                                   selectedItem.id === equippedPants.id || 
-                                  selectedItem.id === equippedSword.id)
+                                  selectedItem.id === equippedSword.id ||
+                                  (equippedShield && selectedItem.id === equippedShield.id))
                                   ? '既に装着されています'
                                   : 'この装備を装着する'}
                               </button>
@@ -7018,7 +7990,8 @@ export default function App() {
                                   selectedItem.id === equippedHat.id || 
                                   selectedItem.id === equippedArmor.id || 
                                   selectedItem.id === equippedPants.id || 
-                                  selectedItem.id === equippedSword.id
+                                  selectedItem.id === equippedSword.id ||
+                                  (equippedShield && selectedItem.id === equippedShield.id)
                                 )
                                   ? 'bg-gray-950/50 text-gray-600 border border-gray-950 cursor-not-allowed'
                                   : 'bg-amber-950 hover:bg-amber-900 border border-amber-800 text-amber-300'
@@ -7028,7 +8001,8 @@ export default function App() {
                                   selectedItem.id === equippedHat.id || 
                                   selectedItem.id === equippedArmor.id || 
                                   selectedItem.id === equippedPants.id || 
-                                  selectedItem.id === equippedSword.id
+                                  selectedItem.id === equippedSword.id ||
+                                  (equippedShield && selectedItem.id === equippedShield.id)
                                 )
                               }
                             >
@@ -7036,7 +8010,8 @@ export default function App() {
                                 selectedItem.id === equippedHat.id || 
                                 selectedItem.id === equippedArmor.id || 
                                 selectedItem.id === equippedPants.id || 
-                                selectedItem.id === equippedSword.id
+                                selectedItem.id === equippedSword.id ||
+                                (equippedShield && selectedItem.id === equippedShield.id)
                               )
                                 ? '装着中は売却できません'
                                 : `アイテムを売却する (+${selectedItem.area * 15 + (selectedItem.rarity === 'legendary' ? 100 : selectedItem.rarity === 'epic' ? 50 : 20)} G)`}
@@ -7057,28 +8032,247 @@ export default function App() {
                 </div>
               )}
 
-              {/* BAG BUTTON IN BOTTOM-RIGHT OF PLAY SCREEN */}
+              {/* SPECIAL SYSTEM: Shop / Store Overlay */}
+              {isShopOpen && (
+                <div className="absolute inset-0 bg-slate-950/96 backdrop-blur-md flex flex-col p-4 z-20 select-none animate-fade-in text-white/95">
+                  {/* Header */}
+                  <div className="flex items-center justify-between border-b border-yellow-700/60 pb-2 mb-2 shrink-0">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded bg-amber-950/80 flex items-center justify-center border border-amber-500/50">
+                        <Store className="w-4 h-4 text-yellow-500 animate-pulse" />
+                      </div>
+                      <div>
+                        <h2 className="text-xs font-bold tracking-wide flex items-center gap-1 text-yellow-400">
+                          <span>🛒 時空の便利ショップ</span>
+                          <span className="text-[9px] px-1 bg-amber-950 text-amber-400 border border-amber-800 rounded font-mono font-normal">GAME PAUSED</span>
+                        </h2>
+                        <div className="text-[9px] text-gray-500 font-mono">エリア４到達記念！いつでも転送可能な空間商店。</div>
+                      </div>
+                    </div>
+                    
+                    {/* Gold indicator */}
+                    <div className="flex items-center gap-2.5">
+                      <div className="bg-gray-900/80 px-2.5 py-1 rounded border border-yellow-600/30 text-[10px] font-mono flex items-center gap-1">
+                        <span className="text-yellow-400 font-bold">💰 所持金:</span>
+                        <span className="text-yellow-300 font-bold font-mono text-xs">{currentGold} G</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setIsShopOpen(false);
+                          gameRef.current.isShopOpen = false;
+                          gameRef.current.keys = {};
+                          gameAudio.playCollect();
+                        }}
+                        className="text-gray-400 hover:text-white transition bg-gray-900 hover:bg-gray-800 border border-gray-800 px-2.5 py-1 text-[10px] font-bold rounded"
+                      >
+                        閉じる [×]
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Body layout */}
+                  <div className="flex-1 grid grid-cols-12 gap-4 overflow-hidden min-h-0 text-xs text-gray-200">
+                    {/* Left Column: Equipment items list (5 random stock) */}
+                    <div className="col-span-8 bg-gray-950/70 p-3 rounded-lg border border-yellow-900/20 flex flex-col overflow-hidden min-h-0">
+                      <div className="text-[10px] text-yellow-450 font-bold mb-2 uppercase tracking-wide border-b border-yellow-950/50 pb-1 flex justify-between shrink-0">
+                        <span className="text-yellow-450 font-extrabold">⚔️ 本日のランダム限定防具・武器（開く度にラインナップが変化します）</span>
+                        <span className="text-[9px] font-normal text-gray-500 font-mono">在庫 5 個</span>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-0">
+                        {shopEquipment.map((shopItem, idx) => {
+                          const { item, price, sold } = shopItem;
+                          const rarityBorder = 
+                            item.rarity === 'legendary' ? 'border-yellow-500/30 bg-yellow-950/5' :
+                            item.rarity === 'epic' ? 'border-purple-500/30 bg-purple-950/5' :
+                            item.rarity === 'rare' ? 'border-blue-500/30 bg-blue-950/5' :
+                            'border-gray-850 bg-gray-900/10';
+
+                          const rarityText =
+                            item.rarity === 'legendary' ? 'text-yellow-400 font-bold' :
+                            item.rarity === 'epic' ? 'text-purple-400 font-bold' :
+                            item.rarity === 'rare' ? 'text-blue-400 font-bold' :
+                            'text-gray-400';
+
+                          const rarityLabel =
+                            item.rarity === 'legendary' ? 'レジェンダリー' :
+                            item.rarity === 'epic' ? 'エピック' :
+                            item.rarity === 'rare' ? 'レア' :
+                            'コモン';
+
+                          const isWeapon = item.type === 'sword';
+
+                          return (
+                            <div 
+                              key={`${item.id}-${idx}`}
+                              className={`p-2 rounded border flex items-center justify-between gap-3 text-[10px] relative ${rarityBorder} ${
+                                sold ? 'opacity-55' : 'hover:border-yellow-600/35'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                <span className="w-1.5 h-10 rounded shrink-0 shadow" style={{ backgroundColor: item.color }} />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-extrabold text-[11px] truncate text-white" style={{ color: item.color }}>
+                                      {item.name}
+                                    </span>
+                                    <span className={`text-[8px] px-1 bg-gray-900 border border-gray-800 rounded-sm font-mono tracking-wider ${rarityText}`}>
+                                      {rarityLabel}
+                                    </span>
+                                    <span className="text-[8.5px] px-1 font-bold bg-[#1e293b] text-[#38bdf8] border border-slate-700 rounded-sm font-sans shrink-0">
+                                      {item.type === 'hat' ? '👒 頭' : item.type === 'armor' ? '🥋 胴' : item.type === 'pants' ? '👖 脚' : item.type === 'sword' ? '⚔️ 武器' : '🛡️ 盾'}
+                                    </span>
+                                  </div>
+                                  <div className="text-[9px] text-gray-400 mt-0.5 truncate leading-relaxed">
+                                    {item.description}
+                                  </div>
+                                  <div className="text-[8.5px] text-[#38bdf8] font-bold mt-0.5 flex items-center gap-1">
+                                    {isWeapon ? <Sword className="w-3 h-3 text-orange-400" /> : <Shield className="w-3 h-3 text-[#38bdf8]" />}
+                                    <span>効果: {isWeapon ? '攻撃力' : '防御力'} +{item.statValue}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col items-end justify-center shrink-0 min-w-[76px] pl-2 border-l border-gray-900">
+                                {sold ? (
+                                  <span className="text-gray-500 font-extrabold text-[10px] py-1 bg-gray-950/60 border border-gray-900 rounded w-full text-center">
+                                    売却済
+                                  </span>
+                                ) : (
+                                  <>
+                                    <div className="text-yellow-400 font-bold font-mono text-center mb-1 text-[11px] leading-tight">
+                                      {price} G
+                                    </div>
+                                    <button
+                                      onClick={() => buyEquipmentItem(idx)}
+                                      className={`w-full py-1 text-center font-extrabold rounded text-[9px] transition active:scale-95 border shadow-sm ${
+                                        currentGold >= price 
+                                          ? 'bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 border-yellow-400 text-white cursor-pointer' 
+                                          : 'bg-gray-900 hover:bg-gray-800 text-gray-500 border-gray-800 cursor-not-allowed'
+                                      }`}
+                                      disabled={currentGold < price}
+                                    >
+                                      購入する
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Right Column: Magma Potion Feature Slot */}
+                    <div className="col-span-4 bg-gradient-to-b from-gray-950 to-[#221008] p-3 rounded-lg border border-red-950/50 flex flex-col justify-between">
+                      <div>
+                        <div className="text-[10px] text-orange-400 font-extrabold mb-2 uppercase tracking-wide border-b border-orange-950/40 pb-1 shrink-0">
+                          <span>🧪 特殊回復・増強薬</span>
+                        </div>
+
+                        <div className="flex flex-col items-center justify-center text-center p-2">
+                          <div className="relative w-14 h-14 bg-[#3f1c08]/80 border border-orange-500/30 rounded-full flex items-center justify-center mb-2 shadow-[0_0_15px_rgba(249,115,22,0.15)]">
+                            <Flame className="w-7 h-7 text-orange-500 animate-pulse" />
+                          </div>
+
+                          <span className="font-extrabold text-orange-400 text-xs">
+                            🔥マグマポーション
+                          </span>
+                          
+                          <span className="text-[8px] mt-0.5 px-1 py-0.5 font-bold uppercase bg-orange-950/85 text-orange-400 border border-orange-900 rounded font-mono shrink-0">
+                            EPIC / エリア４必須アイテム
+                          </span>
+
+                          <p className="text-[9px] leading-relaxed text-gray-300 mt-2 max-h-[120px] overflow-y-auto bg-black/40 p-2 rounded border border-gray-900">
+                            飲むことで周囲を烈火に包むブーストモードになり、<span className="text-orange-400 font-bold">60秒間攻撃力が＋10アップ</span>する。さらに極光結晶ゴーレムの結晶シールドを破壊できるようになる！
+                          </p>
+                          
+                          <div className="text-gray-400 text-[8px] mt-1.5 italic">
+                            💡 エリア４・極寒の強敵戦には無類の強さを発揮します。
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-2.5 border-t border-orange-950/60 shrink-0">
+                        <div className="flex items-center justify-between mb-1.5 text-[10px]">
+                          <span className="text-gray-400">必要額:</span>
+                          <span className="text-orange-400 font-extrabold font-mono text-xs">1,000 G</span>
+                        </div>
+                        <button
+                          onClick={buyMagmaPotion}
+                          className={`w-full py-1.5 text-center font-extrabold rounded text-[10px] transition-all active:scale-95 border flex items-center justify-center gap-1 shadow ${
+                            currentGold >= 1000 
+                              ? 'bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 border-orange-400 text-white cursor-pointer' 
+                              : 'bg-gray-900 hover:bg-gray-800 text-gray-500 border-gray-800 cursor-not-allowed'
+                          }`}
+                          disabled={currentGold < 1000}
+                        >
+                          <Flame className="w-3 h-3 text-orange-300 animate-pulse" />
+                          <span>薬を購入する</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SHOP AND BAG BUTTON CONTAINER IN BOTTOM-RIGHT OF PLAY SCREEN */}
               {!isGameOver && !hasWonFinal && (
-                <button
-                  id="bag-button"
-                  onClick={() => {
-                    const nextVal = !isBagOpen;
-                    setIsBagOpen(nextVal);
-                    gameRef.current.isBagOpen = nextVal;
-                    // reset held movement keys so adventurer doesn't dart instantly upon bag closure
-                    gameRef.current.keys = {};
-                    gameAudio.playCollect();
-                  }}
-                  className={`absolute bottom-3 right-3 z-25 p-2.5 rounded-full border shadow-xl flex items-center justify-center transition-all duration-200 active:scale-95 ${
-                    isBagOpen 
-                      ? 'bg-purple-600 hover:bg-purple-500 border-purple-300 text-white ring-2 ring-purple-600 ring-offset-2 ring-offset-gray-950 scale-105' 
-                      : 'bg-[#151336]/80 hover:bg-[#25225c]/95 border-purple-500/50 text-[#c084fc] hover:scale-105 hover:border-purple-400'
-                  }`}
-                  style={{ touchAction: 'none' }}
-                  title={isBagOpen ? "バッグを閉じる" : "バッグを開く"}
-                >
-                  <Backpack className="w-5 h-5" />
-                </button>
+                <div className="absolute bottom-3 right-3 z-25 flex items-center gap-2">
+                  {/* SHOP BUTTON */}
+                  {shopUnlocked && (
+                    <button
+                      id="shop-button"
+                      onClick={() => {
+                        const nextVal = !isShopOpen;
+                        setIsShopOpen(nextVal);
+                        gameRef.current.isShopOpen = nextVal;
+                        if (nextVal) {
+                          generateShopItems();
+                          setIsBagOpen(false);
+                          gameRef.current.isBagOpen = false;
+                        }
+                        gameRef.current.keys = {};
+                        gameAudio.playCollect();
+                      }}
+                      className={`p-2.5 rounded-full border shadow-xl flex items-center justify-center transition-all duration-200 active:scale-95 ${
+                        isShopOpen 
+                          ? 'bg-yellow-600 hover:bg-yellow-500 border-yellow-300 text-white ring-2 ring-yellow-600 ring-offset-2 ring-offset-gray-950 scale-105' 
+                          : 'bg-[#151336]/80 hover:bg-[#524419]/95 border-yellow-500/50 text-[#facc15] hover:scale-105 hover:border-yellow-400'
+                      }`}
+                      style={{ touchAction: 'none' }}
+                      title={isShopOpen ? "ショップを閉じる" : "ショップを開く"}
+                    >
+                      <Store className="w-5 h-5" />
+                    </button>
+                  )}
+
+                  {/* BAG BUTTON */}
+                  <button
+                    id="bag-button"
+                    onClick={() => {
+                      const nextVal = !isBagOpen;
+                      setIsBagOpen(nextVal);
+                      gameRef.current.isBagOpen = nextVal;
+                      if (nextVal) {
+                        setIsShopOpen(false);
+                        gameRef.current.isShopOpen = false;
+                      }
+                      // reset held movement keys so adventurer doesn't dart instantly upon bag closure
+                      gameRef.current.keys = {};
+                      gameAudio.playCollect();
+                    }}
+                    className={`p-2.5 rounded-full border shadow-xl flex items-center justify-center transition-all duration-200 active:scale-95 ${
+                      isBagOpen 
+                        ? 'bg-purple-600 hover:bg-purple-500 border-purple-300 text-white ring-2 ring-purple-600 ring-offset-2 ring-offset-gray-950 scale-105' 
+                        : 'bg-[#151336]/80 hover:bg-[#25225c]/95 border-purple-500/50 text-[#c084fc] hover:scale-105 hover:border-purple-400'
+                    }`}
+                    style={{ touchAction: 'none' }}
+                    title={isBagOpen ? "バッグを閉じる" : "バッグを開く"}
+                  >
+                    <Backpack className="w-5 h-5" />
+                  </button>
+                </div>
               )}
             </div>
             
@@ -7139,13 +8333,40 @@ export default function App() {
 
               {/* Action Buttons */}
               <div className="md:col-span-7 flex flex-col gap-2.5">
-                <button 
-                  onClick={triggerPlayerAttack}
-                  className="w-full py-4 text-center font-bold text-base rounded-xl bg-orange-600 hover:bg-orange-500 active:scale-95 text-white shadow-md hover:shadow-orange-500/20 transition flex items-center justify-center gap-2"
-                >
-                  <Sword className="w-5 h-5 animate-bounce" />
-                  <span>基本攻撃をする [SPACE]</span>
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button 
+                    onClick={triggerPlayerAttack}
+                    className="py-3 px-2 text-center font-bold text-sm md:text-base rounded-xl bg-orange-600 hover:bg-orange-500 active:scale-95 text-white shadow-md hover:shadow-orange-500/20 transition flex items-center justify-center gap-1.5"
+                  >
+                    <Sword className="w-5 h-5" />
+                    <span>攻撃 [SPACE]</span>
+                  </button>
+
+                  {currentArea >= 5 ? (
+                    <button 
+                      onClick={triggerShieldBlock}
+                      className={`py-3 px-2 text-center font-bold text-sm md:text-base rounded-xl active:scale-95 transition flex items-center justify-center gap-1.5 ${
+                        !equippedShield 
+                          ? 'bg-gray-850 text-gray-400 border border-gray-750 cursor-not-allowed opacity-50' 
+                          : 'bg-blue-600 hover:bg-blue-500 text-white shadow-md hover:shadow-blue-500/20'
+                      }`}
+                      disabled={!equippedShield}
+                      title={!equippedShield ? "盾を装備していません" : "盾ガードを使用します [B]"}
+                    >
+                      <Shield className="w-5 h-5 animate-pulse" />
+                      <span>盾ガード [B]</span>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={triggerShieldBlock}
+                      className="py-3 px-2 text-center font-bold text-xs md:text-sm rounded-xl bg-gray-900/60 border border-gray-800 text-gray-500 active:scale-95 transition flex items-center justify-center gap-1.5 hover:bg-gray-850 hover:text-gray-400"
+                      title="盾はエリア５に達すると解放されます"
+                    >
+                      <Lock className="w-4 h-4 text-purple-500" />
+                      <span>盾ロック中 (Area 5解放)</span>
+                    </button>
+                  )}
+                </div>
 
                 <div className="grid grid-cols-2 gap-2">
                   {currentArea === 3 && screenCoordinates.x === 1 && screenCoordinates.y === 2 && !lizardKingDefeated ? (

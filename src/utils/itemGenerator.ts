@@ -30,10 +30,11 @@ const CATEGORY_NAMES: Record<ItemType, string[]> = {
   pants: ['ズボン', 'レギンス', 'タイツ', 'グリーブ', 'クイス'],
   sword: ['ショートソード', 'クレイモア', 'カタナ', '神剣', 'ブレイズバスター'],
   potion: ['不思議な薬瓶'],
+  shield: ['丸盾', 'バックラー', 'ヒーターシールド', 'カイトシールド', '不破の神盾'],
 };
 
 // Boss specific items (Guaranteed Legendary)
-const BOSS_ITEMS: Record<number, Record<ItemType, string>> = {
+const BOSS_ITEMS: Record<number, Partial<Record<ItemType, string>>> = {
   1: {
     hat: '「喰種スライム」スライムベレー',
     armor: '「粘体主」リキッドジャケット',
@@ -68,10 +69,11 @@ const BOSS_ITEMS: Record<number, Record<ItemType, string>> = {
     pants: '「無窮」ウルトラ・ヴォイドレガース',
     sword: '「破滅」エンドレス・カオスディバイン',
     potion: '「深淵水」カオスエリクシル',
+    shield: '「聖盾」イージスの神盾',
   },
 };
 
-export function getDefaultEquipment(): { hat: Item; armor: Item; pants: Item; sword: Item } {
+export function getDefaultEquipment(): { hat: Item; armor: Item; pants: Item; sword: Item; shield: Item } {
   return {
     hat: {
       id: 'default-hat',
@@ -113,14 +115,26 @@ export function getDefaultEquipment(): { hat: Item; armor: Item; pants: Item; sw
       description: '旅立ちの時に削ったただの細木の棒。攻撃力 +5',
       color: '#9ca3af',
     },
+    shield: {
+      id: 'default-shield',
+      name: '初心者の古びた丸盾',
+      type: 'shield',
+      statValue: 1,
+      rarity: 'common',
+      area: 1,
+      description: '小さな木製の擦り切れた丸盾。防御力 +1',
+      color: '#a16207',
+    },
   };
 }
 
 export function generateItem(area: number, isBossDrop: boolean = false): Item {
   const id = `item-${Math.random().toString(36).substr(2, 9)}`;
   
-  // Choose item type
-  const types: ItemType[] = ['hat', 'armor', 'pants', 'sword'];
+  // Choose item type (shield is only available if area >= 5)
+  const types: ItemType[] = area >= 5 
+    ? ['hat', 'armor', 'pants', 'sword', 'shield'] 
+    : ['hat', 'armor', 'pants', 'sword'];
   const type = types[Math.floor(Math.random() * types.length)];
 
   let rarity: 'common' | 'rare' | 'epic' | 'legendary' = 'common';
@@ -196,7 +210,7 @@ export function generateItem(area: number, isBossDrop: boolean = false): Item {
 
 export function generateRareItemForCarrier(area: number): Item {
   const id = `item-rare-carrier-${Math.random().toString(36).substr(2, 9)}`;
-  const types: ItemType[] = ['hat', 'armor', 'pants', 'sword'];
+  const types: ItemType[] = ['hat', 'armor', 'pants', 'sword', 'shield'];
   const type = types[Math.floor(Math.random() * types.length)];
   
   const rarity: 'epic' | 'legendary' = Math.random() < 0.3 ? 'legendary' : 'epic';

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type ItemType = 'hat' | 'armor' | 'pants' | 'sword' | 'potion';
+export type ItemType = 'hat' | 'armor' | 'pants' | 'sword' | 'potion' | 'shield';
 
 export interface Item {
   id: string;
@@ -33,6 +33,8 @@ export interface Player {
   exp: number;
   kills: number;
   frozenTimer?: number; // 2秒間の氷結 (動けなくなる)
+  shieldActiveTimer?: number; // 盾ガードの有効フレーム数
+  shieldCooldown?: number; // 盾ガードの秒数フレーム
 }
 
 export type EnemyType = 'mob1' | 'mob2' | 'boss' | 'key_carrier';
@@ -69,6 +71,7 @@ export interface Enemy {
 
 export interface Projectile {
   id: string;
+  shooterId?: string;
   x: number;
   y: number;
   dx: number;
