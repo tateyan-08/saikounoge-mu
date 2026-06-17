@@ -1946,7 +1946,13 @@ export default function App() {
           }
 
           if (finalDamage > 0) {
-            enemy.hp -= finalDamage;
+            // エリア5のボスは剣攻撃（testPlayModeによる即死を除く）のみ有効とする
+            if (enemy.id === 'boss-5' && gameRef.current.testPlayMode) {
+              finalDamage = 0;
+            }
+            if (finalDamage > 0) {
+              enemy.hp -= finalDamage;
+            }
 
             // Shock screen with flash feedback
             gameRef.current.screenShake = 6;
@@ -2835,6 +2841,22 @@ export default function App() {
         }
       });
 
+      // Area 5 boss aura - prevent getting too close
+      if (area === 5) {
+        const boss = gameRef.current.enemies.find(e => e.id === 'boss-5' || e.type === 'boss');
+        if (boss && boss.hp > 0 && boss.screenX === player.screenX && boss.screenY === player.screenY) {
+          const px = player.x + player.width / 2;
+          const py = player.y + player.height / 2;
+          const dist = Math.sqrt((px - boss.x) ** 2 + (py - boss.y) ** 2);
+          const auraRadius = 150;
+          if (dist < auraRadius) {
+            const angle = Math.atan2(py - boss.y, px - boss.x);
+            player.x = boss.x + Math.cos(angle) * auraRadius - player.width / 2;
+            player.y = boss.y + Math.sin(angle) * auraRadius - player.height / 2;
+          }
+        }
+      }
+
       // 凍った岩との衝突判定を追加
       const rocks = (gameRef.current as any).frozenRocks || [];
       rocks.forEach((rock: any) => {
@@ -3248,6 +3270,49 @@ export default function App() {
                   stiffenLen = 150; // 硬直時間2.5秒（150フレーム）
                   addLog(`⚡ 【好機】 氷牙蒼龍グラキオスが大きな隙を晒している！今が攻撃のチャンスだ！(2.5秒間)`);
                 }
+              } else if (area === 5) {
+                // === エリア5ボス：終焉魔神龍ヘルアビス独自攻撃パターン！ ===
+                if (enemy.bossAttackCycle === undefined) enemy.bossAttackCycle = 0;
+                enemy.bossAttackCycle++;
+
+                if (enemy.bossAttackCycle % 3 === 0) {
+                  // パターン1: 絶望の広範囲波動（プレイヤー位置を狙う魔法弾）
+                  for (let i = 0; i < 12; i++) {
+                    const pAngle = (Math.PI * 2 / 12) * i;
+                    gameRef.current.projectiles.push({
+                      id: `p-${Math.random()}`,
+                      x: ex,
+                      y: ey,
+                      dx: Math.cos(pAngle) * 3.8,
+                      dy: Math.sin(pAngle) * 3.8,
+                      radius: 10,
+                      damage: 42,
+                      color: '#a855f7',
+                      screenX: player.screenX,
+                      screenY: player.screenY,
+                    });
+                  }
+                  addLog(`💀 【終焉の波動！】ヘルアビスから全方位に絶望の魔弾が放たれた！`);
+                  stiffenLen = 120;
+                } else {
+                  // パターン2: 追尾する暗黒の爪（プレイヤーを追尾する弾）
+                  const pAngle = Math.atan2(py - ey, px - ex);
+                  gameRef.current.projectiles.push({
+                    id: `p-${Math.random()}`,
+                    x: ex,
+                    y: ey,
+                    dx: Math.cos(pAngle) * 5.5,
+                    dy: Math.sin(pAngle) * 5.5,
+                    radius: 14,
+                    damage: 48,
+                    color: '#4c1d95',
+                    screenX: player.screenX,
+                    screenY: player.screenY,
+                    isHoming: true, // Assuming physics logic handles this or similar
+                  });
+                  addLog(`🌑 【暗黒の爪！】ヘルアビスが追尾する闇の弾を放った！`);
+                  stiffenLen = 120;
+                }
               } else {
                 // 通常ボスの全方位弾
                 const projectilesCount = 4 + area * 2;
@@ -3405,21 +3470,34 @@ export default function App() {
                     addLog(`💥 【一撃必殺！】 盾から反射した神気により、敵「${enemy.name}」を一撃で打ち倒した！`);
                     handleEnemyDefeat(enemy);
                   } else {
-                    // ボスの場合は最大体力の15%の割合ダメージを与える
-                    const reflectDamage = Math.max(50, Math.round(enemy.maxHp * 0.15));
-                    enemy.hp -= reflectDamage;
-                    gameRef.current.floatingTexts.push({
-                      id: `bossreflect-txt-${Math.random()}`,
-                      text: `🛡️ カウンター -${reflectDamage}`,
-                      x: enemy.x,
-                      y: enemy.y - 12,
-                      color: '#f43f5e',
-                      alpha: 1,
-                      life: 40
-                    });
-                    addLog(`🛡️ 【カウンター！】 ボス「${enemy.name}」に盾の反射衝撃で ${reflectDamage} ダメージを与えました！`);
-                    if (enemy.hp <= 0) {
-                      handleEnemyDefeat(enemy);
+                    if (gameRef.current.area === 5 || enemy.id === 'boss-5') {
+                      gameRef.current.floatingTexts.push({
+                        id: `bossreflect-txt-${Math.random()}`,
+                        text: `🛡️ 盾に防がれた！`,
+                        x: enemy.x,
+                        y: enemy.y - 12,
+                        color: '#fbbf24',
+                        alpha: 1,
+                        life: 40
+                      });
+                      addLog(`🛡️ ボスへ盾攻撃を試みたが、エリア5のボスは盾にも動じない！`);
+                    } else {
+                      // ボスの場合は最大体力の15%の割合ダメージを与える
+                      const reflectDamage = Math.max(50, Math.round(enemy.maxHp * 0.15));
+                      enemy.hp -= reflectDamage;
+                      gameRef.current.floatingTexts.push({
+                        id: `bossreflect-txt-${Math.random()}`,
+                        text: `🛡️ カウンター -${reflectDamage}`,
+                        x: enemy.x,
+                        y: enemy.y - 12,
+                        color: '#f43f5e',
+                        alpha: 1,
+                        life: 40
+                      });
+                      addLog(`🛡️ 【カウンター！】 ボス「${enemy.name}」に盾の反射衝撃で ${reflectDamage} ダメージを与えました！`);
+                      if (enemy.hp <= 0) {
+                        handleEnemyDefeat(enemy);
+                      }
                     }
                   }
 
@@ -5889,6 +5967,15 @@ export default function App() {
             ctx.stroke();
 
           } else {
+            // === エリア5オーラ ===
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(0, 0, 150, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(168, 85, 247, ${0.2 + Math.sin(Date.now() / 200) * 0.1})`; // 脈動させる
+            ctx.lineWidth = 6;
+            ctx.stroke();
+            ctx.restore();
+
             // === エリア5: 終焉魔神龍ヘルアビス (Demon Chaos Dragon) ===
             ctx.fillStyle = '#6b21a8'; // 破滅パープル
             ctx.strokeStyle = '#1e1b4b';
