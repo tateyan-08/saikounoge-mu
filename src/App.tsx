@@ -300,8 +300,8 @@ export default function App() {
   // Game reactive state (Mirrored from refs for UI rendering)
   const [currentArea, setCurrentArea] = useState<number>(1);
   const [playerLevel, setPlayerLevel] = useState<number>(1);
-  const [playerHP, setPlayerHP] = useState<number>(100);
-  const [playerMaxHP, setPlayerMaxHP] = useState<number>(100);
+  const [playerHP, setPlayerHP] = useState<number>(200);
+  const [playerMaxHP, setPlayerMaxHP] = useState<number>(200);
   const [playerExp, setPlayerExp] = useState<number>(0);
   const [playerKills, setPlayerKills] = useState<number>(0);
   const [currentGold, setCurrentGold] = useState<number>(0);
@@ -385,8 +385,8 @@ export default function App() {
       y: 240,
       width: 28,
       height: 38,
-      hp: 100,
-      maxHp: 100,
+      hp: 200,
+      maxHp: 200,
       baseAtk: 10,
       baseDef: 2,
       dir: 'right' as 'up' | 'down' | 'left' | 'right',
@@ -1386,8 +1386,8 @@ export default function App() {
     setInventory([defaultHat, defaultArmor, defaultPants, defaultSword]);
     
     // Set game stats ref safely
-    gameRef.current.player.maxHp = 100;
-    gameRef.current.player.hp = 100;
+    gameRef.current.player.maxHp = 200;
+    gameRef.current.player.hp = 200;
     gameRef.current.player.baseAtk = 10;
     gameRef.current.player.baseDef = 2;
     
@@ -2310,7 +2310,7 @@ export default function App() {
 
     // Special Magma Potion 10% extra drop from Magma Bat (Area 3, mob2)
     const isMagmaBat = area === 3 && enemy.type === 'mob2';
-    if (isMagmaBat && Math.random() < 0.10) {
+    if (isMagmaBat && Math.random() < 0.25) {
       const potionItem: Item = {
         id: `magma-potion-${Math.random().toString(36).substr(2, 5)}`,
         name: '🔥マグマポーション',
@@ -2332,7 +2332,7 @@ export default function App() {
         bounceY: 0,
       });
 
-      addLog(`✨レアドロップ！マグマバットから「🔥マグマポーション」がドロップしました！ (10%の確率)`);
+      addLog(`✨レアドロップ！マグマバットから「🔥マグマポーション」がドロップしました！ (25%の確率)`);
     }
 
     // If Boss, trigger world portal generation right where they died
@@ -2571,20 +2571,20 @@ export default function App() {
           (player as any).burnTick = 0;
 
           if (!gameRef.current.testPlayMode) {
-            player.hp = Math.max(0, player.hp - 10);
+            player.hp = Math.max(0, player.hp - 3);
             setPlayerHP(player.hp);
 
             // Floating Text (Orange for burn)
             gameRef.current.floatingTexts.push({
               id: `burn-dmg-${Math.random()}`,
-              text: `-10 🔥`,
+              text: `-3 🔥`,
               x: player.x,
               y: player.y - 12,
               color: '#f97316',
               alpha: 1,
               life: 40
             });
-            addLog(`🔥 燃焼の継続ダメージによって 10 ダメージ！ (残り約 ${Math.ceil((player as any).burnDuration / 60)}秒)`);
+            addLog(`🔥 燃焼の継続ダメージによって 3 ダメージ！ (残り約 ${Math.ceil((player as any).burnDuration / 60)}秒)`);
           }
         }
         // 燃焼のエフェクトパーティクル（上昇する火花）
@@ -3838,7 +3838,7 @@ export default function App() {
             if (p.isBurn) {
               (player as any).burnDuration = 180; // 3秒間
               (player as any).burnTick = 0;
-              addLog(`🔥 燃え盛る継続ダメージ！ 3秒間、燃焼ダメージ(毎秒10ダメージ)を受ける！`);
+              addLog(`🔥 燃え盛る継続ダメージ！ 3秒間、燃焼ダメージ(毎秒3ダメージ)を受ける！`);
 
               // 被弾時に飛び散る火花エフェクト
               for (let b = 0; b < 15; b++) {
@@ -7347,8 +7347,8 @@ export default function App() {
     // Ref state resets
     gameRef.current.area = 1;
     gameRef.current.player.level = 1;
-    gameRef.current.player.hp = 100;
-    gameRef.current.player.maxHp = 100;
+    gameRef.current.player.hp = 200;
+    gameRef.current.player.maxHp = 200;
     gameRef.current.player.baseAtk = 10;
     gameRef.current.player.baseDef = 2;
     gameRef.current.player.exp = 0;
