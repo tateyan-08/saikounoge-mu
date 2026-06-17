@@ -313,6 +313,7 @@ export default function App() {
   const [equippedSword, setEquippedSword] = useState<Item>(getDefaultEquipment().sword);
   const [equippedShield, setEquippedShield] = useState<Item | null>(null);
   const [hasReceivedArea5Shield, setHasReceivedArea5Shield] = useState<boolean>(false);
+  const [showCheckBagMessage, setShowCheckBagMessage] = useState<boolean>(false);
 
   // Inventory & Game controls
   const [inventory, setInventory] = useState<Item[]>([
@@ -499,6 +500,7 @@ export default function App() {
 
       setInventory(prev => [...prev, aegaeisShield]);
       setEquippedShield(aegaeisShield);
+      setShowCheckBagMessage(true);
       
       setActiveDialogue({
         speaker: '🛡️ 【新防具カテゴリ：盾解放・自動装備！】',
@@ -509,6 +511,13 @@ export default function App() {
       gameAudio.playCollect();
     }
   }, [currentArea, hasReceivedArea5Shield]);
+
+  // Clear bag check message when bag is opened
+  useEffect(() => {
+    if (isBagOpen) {
+      setShowCheckBagMessage(false);
+    }
+  }, [isBagOpen]);
 
   // Shop item generators and transactions
   const generateShopItems = () => {
@@ -2952,7 +2961,7 @@ export default function App() {
         if (gameRef.current.enemies.length < 2 && Math.random() < 0.003) {
           // Respawn mob
           const mobNames = {
-            1: ['グリーンスライム', '草原 of 牙蜘蛛'],
+            1: ['グリーンスライム'],
             2: ['針コパースコーピオン', '砂漠 of 魔石兵'],
             3: ['獄炎トカゲ', 'マグマバット'],
             4: ['フリーズスプライト', '極光結晶ゴーレム'],
@@ -7601,6 +7610,15 @@ export default function App() {
               )}
 
               {/* HUD OVERLAY: Top-Left (Mini-map) and Top-Right (HP, GOLD, ATK, DEF) */}
+              {showCheckBagMessage && (
+                 <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+                   <div className="bg-slate-900/90 border-2 border-amber-500/50 p-6 rounded-xl text-center shadow-2xl animate-pulse">
+                      <h2 className="text-xl font-bold text-amber-100 mb-2">⚠️ バッグを確認してください！</h2>
+                      <p className="text-sm text-gray-300">新しい装備が追加されました。</p>
+                   </div>
+                 </div>
+               )}
+
               {!isGameOver && !hasWonFinal && !isBagOpen && (
                 <>
                   {/* Left HUD: Compact 3x3 World Minimap */}
